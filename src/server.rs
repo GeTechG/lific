@@ -341,12 +341,9 @@ pub(crate) fn build_app_with_store(
             any(move |mut request: Request<Body>| async move {
                 // rmcp copies HTTP request extensions into the spawned tool
                 // task's RequestContext. Keep identity bound to that request.
-                let issue_links = links::IssueLinkContext::for_http_request(
+                let issue_links = mcp_issue_link_context(
+                    &request,
                     mcp_public_url.as_deref(),
-                    request
-                        .headers()
-                        .get(header::HOST)
-                        .and_then(|value| value.to_str().ok()),
                     &mcp_allowed_hosts_for_links,
                 );
 
@@ -739,6 +736,21 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     }
 }
 
+fn mcp_issue_link_context(
+    request: &Request<Body>,
+    public_url: Option<&str>,
+    allowed_hosts: &[String],
+) -> Option<links::IssueLinkContext> {
+    links::IssueLinkContext::for_http_request(
+        public_url,
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok()),
+        allowed_hosts,
+    )
+}
+
 /// Build the authless MCP router mounted at `/mcp/<token>`.
 ///
 /// This endpoint deliberately bypasses the OAuth/API-key auth middleware: the
@@ -771,14 +783,8 @@ fn build_authless_mcp_router(
     Router::new().route(
         &format!("/mcp/{token}"),
         any(move |mut request: Request<Body>| async move {
-            let issue_links = links::IssueLinkContext::for_http_request(
-                public_url.as_deref(),
-                request
-                    .headers()
-                    .get(header::HOST)
-                    .and_then(|value| value.to_str().ok()),
-                &allowed_hosts_for_links,
-            );
+            let issue_links =
+                mcp_issue_link_context(&request, public_url.as_deref(), &allowed_hosts_for_links);
             if let Some(issue_links) = issue_links {
                 request
                     .extensions_mut()

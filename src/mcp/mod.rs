@@ -150,34 +150,29 @@ async fn scope_request_context<Fut, R>(
 where
     Fut: std::future::Future<Output = R>,
 {
-    let actor = crate::actor::ActorCtx {
-        user_id: user.as_ref().map(|u| u.id),
-        transport: crate::actor::Transport::Mcp,
-    };
-    REQUEST_DATA
-        .scope(
-            RequestData::Scoped {
-                user,
-                issue_links: issue_links.map(Arc::new),
-            },
-            crate::actor::scope(actor, future),
-        )
-        .await
+    scope_request_data(
+        RequestData::Scoped {
+            user,
+            issue_links: issue_links.map(Arc::new),
+        },
+        future,
+    )
+    .await
 }
 
-async fn scope_http_request_context<Fut, R>(context: Arc<HttpRequestData>, future: Fut) -> R
+async fn scope_request_data<Fut, R>(request_data: RequestData, future: Fut) -> R
 where
     Fut: std::future::Future<Output = R>,
 {
     let actor = crate::actor::ActorCtx {
-        user_id: context.user.as_ref().map(|user| user.id),
+        user_id: match &request_data {
+            RequestData::Scoped { user, .. } => user.as_ref().map(|user| user.id),
+            RequestData::Http(context) => context.user.as_ref().map(|user| user.id),
+        },
         transport: crate::actor::Transport::Mcp,
     };
     REQUEST_DATA
-        .scope(
-            RequestData::Http(context),
-            crate::actor::scope(actor, future),
-        )
+        .scope(request_data, crate::actor::scope(actor, future))
         .await
 }
 
@@ -696,7 +691,7 @@ impl ServerHandler for LificMcp {
                 rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
             let dispatch = || self.dispatch_tool(|| self.tool_router.call(tool_context));
             let result = match http_context {
-                Some(http) => scope_http_request_context(http, dispatch()).await,
+                Some(http) => scope_request_data(RequestData::Http(http), dispatch()).await,
                 None if self.transport == McpTransport::Http => {
                     scope_request_context(http_user.flatten(), None, dispatch()).await
                 }

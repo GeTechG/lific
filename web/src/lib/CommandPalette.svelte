@@ -763,12 +763,16 @@
       return 0;
     }
 
+    updatePendingHits(trimmed);
+    publish([...pendingLocal, ...pendingCatalog], false);
+    return pendingLocal.length;
+  }
+
+  function updatePendingHits(trimmed: string) {
     pendingQuery = trimmed;
     pendingProjectIdent = activeProjectIdent;
     pendingLocal = [...localRefHits(trimmed), ...localHits(trimmed)];
     pendingCatalog = catalogHits(trimmed);
-    publish([...pendingLocal, ...pendingCatalog], false);
-    return pendingLocal.length;
   }
 
   /** Rebuild local/catalog hits without restarting an already completed
@@ -780,10 +784,7 @@
       return;
     }
 
-    pendingQuery = trimmed;
-    pendingProjectIdent = activeProjectIdent;
-    pendingLocal = localHits(trimmed);
-    pendingCatalog = catalogHits(trimmed);
+    updatePendingHits(trimmed);
     const cached = completedRemote;
     const remote =
       cached &&
