@@ -616,7 +616,8 @@ mod tests {
         std::fs::write(&config, "").unwrap();
 
         let plan = ServicePlan::for_config_file(&config).unwrap();
-        let canon_dir = dir.canonicalize().unwrap();
+        // The plan drops Windows' verbatim `\\?\` prefix; compare like with like.
+        let canon_dir = strip_verbatim(dir.canonicalize().unwrap());
         assert_eq!(plan.workdir, canon_dir);
         assert_eq!(plan.config, canon_dir.join("lific.toml"));
     }
