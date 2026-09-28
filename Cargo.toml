@@ -138,6 +138,19 @@ similar = { version = "2", default-features = false, features = ["text"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The Windows background service (src/cli/service/windows.rs): the per-user
+# Run registry value, the supervisor's named mutex and events, and the job
+# object that keeps the server from outliving its supervisor. Already in the
+# tree transitively (tokio, keyring); this names the features it uses.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+] }
+
 # Embeds the Windows application manifest (consoleAllocationPolicy) from
 # build.rs, including when cross-linking the MSVC release from Linux.
 [build-dependencies]

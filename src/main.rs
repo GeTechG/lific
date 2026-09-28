@@ -1629,6 +1629,18 @@ fn cmd_service(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use cli::ui;
     let json = cli::term::wants_json(json_flag);
+    // The Windows logon entry and its supervisor. Both run without a console
+    // and are always handed an absolute --config by the entry `install` wrote.
+    if matches!(action, ServiceAction::Run | ServiceAction::Supervise) {
+        let config =
+            resolved_config_path.ok_or("`lific service run` and `supervise` need --config PATH")?;
+        if matches!(action, ServiceAction::Run) {
+            cli::service::windows::launch(config)?;
+        } else {
+            cli::service::windows::supervise_service(config)?;
+        }
+        return Ok(());
+    }
     let Some(mgr) = cli::service::detect() else {
         return Err(
             "no supported service manager found (needs a systemd user session on \
@@ -1744,6 +1756,8 @@ fn cmd_service(
                 ));
             }
         }
+        // Dispatched before the manager is detected.
+        ServiceAction::Run | ServiceAction::Supervise => {}
     }
     Ok(())
 }

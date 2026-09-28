@@ -14,6 +14,9 @@
 //! - **launchd (LaunchAgent)** on macOS: `~/Library/LaunchAgents/dev.lific.plist`,
 //!   loaded via `launchctl bootstrap gui/<uid>` (falling back to the legacy
 //!   `launchctl load -w` on older systems).
+//! - **Windows (per-user startup)**: a `Lific` value under the user's `Run`
+//!   registry key starts a small supervisor that Lific runs itself. See
+//!   [`windows`] for why this is not Task Scheduler.
 //!
 //! Everything that *generates* file content is a pure function of a
 //! [`ServicePlan`] so it can be unit-tested without touching systemctl.
@@ -21,6 +24,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+pub mod windows;
 
 /// The service name / launchd label. One service per user by design: Lific's
 /// target persona runs a single personal instance.
@@ -32,6 +37,7 @@ pub const LAUNCHD_LABEL: &str = "dev.lific";
 pub enum Manager {
     SystemdUser,
     Launchd,
+    WindowsUser,
 }
 
 impl Manager {
@@ -39,6 +45,7 @@ impl Manager {
         match self {
             Manager::SystemdUser => "systemd (user unit)",
             Manager::Launchd => "launchd (LaunchAgent)",
+            Manager::WindowsUser => "Windows (per-user startup)",
         }
     }
 }
@@ -69,7 +76,9 @@ impl ServicePlan {
             .map_err(|e| format!("cannot resolve the lific binary path: {e}"))?;
         let config = config
             .canonicalize()
+            .map(strip_verbatim)
             .map_err(|e| format!("cannot resolve config path {}: {e}", config.display()))?;
+        let exe = strip_verbatim(exe);
         let workdir = config
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -81,6 +90,23 @@ impl ServicePlan {
             config,
             workdir,
         })
+    }
+}
+
+/// `canonicalize` on Windows returns verbatim paths (`\\?\C:\...`). Those
+/// are not accepted everywhere a path is (a process's working directory, for
+/// one) and they spend characters of the Run entry's 260-character budget, so
+/// drop the prefix when the plain form names the same file. No-op elsewhere.
+fn strip_verbatim(path: PathBuf) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{share}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path,
     }
 }
 
@@ -111,6 +137,11 @@ pub fn detect() -> Option<Manager> {
     if cfg!(target_os = "macos") {
         // launchd is the init on every supported macOS.
         return Some(Manager::Launchd);
+    }
+    if cfg!(windows) {
+        // The user's Run key and Lific's own supervisor need nothing that
+        // can be missing on a supported Windows.
+        return Some(Manager::WindowsUser);
     }
     if cfg!(target_os = "linux") {
         // A user manager needs a session bus; `systemctl --user` failing (or
@@ -145,6 +176,8 @@ pub fn definition_path(manager: Manager) -> Result<PathBuf, String> {
             .join("Library")
             .join("LaunchAgents")
             .join(format!("{LAUNCHD_LABEL}.plist")),
+        // A registry value rather than a file; this is its display form.
+        Manager::WindowsUser => PathBuf::from(windows::definition_display()),
     })
 }
 
@@ -299,7 +332,9 @@ pub struct InstallReport {
 /// Write the service definition and start it now + on boot.
 pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, String> {
     let path = definition_path(manager)?;
-    if let Some(dir) = path.parent() {
+    if manager != Manager::WindowsUser
+        && let Some(dir) = path.parent()
+    {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
@@ -330,6 +365,15 @@ pub fn install(manager: Manager, plan: &ServicePlan) -> Result<InstallReport, St
             std::fs::write(&path, launchd_plist(plan))
                 .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
             launchd_bootstrap(&path)?;
+            Ok(InstallReport {
+                manager: manager.label().into(),
+                definition: path.display().to_string(),
+                enabled: true,
+                linger: None,
+            })
+        }
+        Manager::WindowsUser => {
+            windows::install(&plan.exe, &plan.config)?;
             Ok(InstallReport {
                 manager: manager.label().into(),
                 definition: path.display().to_string(),
@@ -368,6 +412,7 @@ pub fn uninstall(manager: Manager) -> Result<String, String> {
                     .map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
             }
         }
+        Manager::WindowsUser => windows::uninstall()?,
     }
     Ok(path.display().to_string())
 }
@@ -383,19 +428,28 @@ pub struct StatusReport {
 /// Is the service installed and currently running?
 pub fn status(manager: Manager) -> Result<StatusReport, String> {
     let path = definition_path(manager)?;
-    let active = match manager {
-        Manager::SystemdUser => Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", SYSTEMD_UNIT_NAME])
-            .status()
-            .is_ok_and(|s| s.success()),
-        Manager::Launchd => Command::new("launchctl")
-            .args(["print", &format!("{}/{LAUNCHD_LABEL}", launchd_domain()?)])
-            .output()
-            .is_ok_and(|o| o.status.success()),
+    let (installed, active) = match manager {
+        Manager::SystemdUser => (
+            path.exists(),
+            Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", SYSTEMD_UNIT_NAME])
+                .status()
+                .is_ok_and(|s| s.success()),
+        ),
+        Manager::Launchd => (
+            path.exists(),
+            Command::new("launchctl")
+                .args(["print", &format!("{}/{LAUNCHD_LABEL}", launchd_domain()?)])
+                .output()
+                .is_ok_and(|o| o.status.success()),
+        ),
+        // Running means the supervisor is alive and its server has bound the
+        // port, so another program on the port cannot pass for the service.
+        Manager::WindowsUser => windows::status()?,
     };
     Ok(StatusReport {
         manager: manager.label().into(),
-        installed: path.exists(),
+        installed,
         active,
         definition: path.display().to_string(),
     })
@@ -412,6 +466,7 @@ pub fn stop(manager: Manager) -> Result<(), String> {
                 &["bootout", &format!("{domain}/{LAUNCHD_LABEL}")],
             )
         }
+        Manager::WindowsUser => windows::stop(),
     }
 }
 
@@ -420,6 +475,7 @@ pub fn restart(manager: Manager) -> Result<(), String> {
     match manager {
         Manager::SystemdUser => run_ok("systemctl", &["--user", "restart", SYSTEMD_UNIT_NAME]),
         Manager::Launchd => launchd_bootstrap(&definition_path(manager)?),
+        Manager::WindowsUser => windows::restart(),
     }
 }
 
@@ -428,6 +484,7 @@ pub fn logs_hint(manager: Manager) -> String {
     match manager {
         Manager::SystemdUser => format!("journalctl --user -u {SYSTEMD_UNIT_NAME} -f"),
         Manager::Launchd => "tail -f lific.log (in the instance directory)".into(),
+        Manager::WindowsUser => "Get-Content -Wait lific.log (in the instance directory)".into(),
     }
 }
 
@@ -596,5 +653,35 @@ mod tests {
         assert!(systemd.ends_with(".config/systemd/user/lific.service"));
         let launchd = definition_path(Manager::Launchd).unwrap();
         assert!(launchd.ends_with("Library/LaunchAgents/dev.lific.plist"));
+        let windows = definition_path(Manager::WindowsUser).unwrap();
+        assert!(windows.display().to_string().starts_with(r"HKCU\"));
+    }
+
+    #[test]
+    fn verbatim_windows_paths_lose_their_prefix_only_when_safe() {
+        for (input, want) in [
+            (r"\\?\C:\Users\me\lific.toml", r"C:\Users\me\lific.toml"),
+            (
+                r"\\?\UNC\server\share\lific.toml",
+                r"\\server\share\lific.toml",
+            ),
+            // A device path has no plain equivalent and stays as it is.
+            (r"\\?\Volume{0}\lific.toml", r"\\?\Volume{0}\lific.toml"),
+            (r"C:\already\plain.toml", r"C:\already\plain.toml"),
+            ("/home/u/lific.toml", "/home/u/lific.toml"),
+        ] {
+            assert_eq!(strip_verbatim(PathBuf::from(input)), PathBuf::from(want));
+        }
+    }
+
+    #[test]
+    fn detect_matches_the_platform_manager() {
+        if cfg!(windows) {
+            assert_eq!(detect(), Some(Manager::WindowsUser));
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(detect(), Some(Manager::Launchd));
+        } else {
+            assert_ne!(detect(), Some(Manager::WindowsUser));
+        }
     }
 }

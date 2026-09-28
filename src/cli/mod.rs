@@ -630,6 +630,15 @@ pub enum ServiceAction {
 
     /// Restart the service (or start it if stopped).
     Restart,
+
+    /// Windows: what the logon entry runs. Starts the service supervisor for
+    /// --config and exits at once.
+    #[command(hide = true)]
+    Run,
+
+    /// Windows: keep `lific start` running for --config until stopped.
+    #[command(hide = true)]
+    Supervise,
 }
 
 // ── Import ───────────────────────────────────────────────────
@@ -1696,6 +1705,8 @@ mod tests {
             ("status", "Status"),
             ("stop", "Stop"),
             ("restart", "Restart"),
+            ("run", "Run"),
+            ("supervise", "Supervise"),
         ] {
             let cli = Cli::try_parse_from(["lific", "service", arg]).unwrap();
             let Command::Service { action } = cli.command else {
@@ -1707,6 +1718,8 @@ mod tests {
                 ServiceAction::Status => "Status",
                 ServiceAction::Stop => "Stop",
                 ServiceAction::Restart => "Restart",
+                ServiceAction::Run => "Run",
+                ServiceAction::Supervise => "Supervise",
             };
             assert_eq!(got, want);
         }

@@ -655,6 +655,8 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!(addr = %addr, "lific server started (REST + MCP + OAuth at /mcp)");
+    // Under the Windows service supervisor, report that the port is ours.
+    crate::cli::service::windows::notify_ready();
 
     let shutdown_pool = pool.clone();
     let server = axum::serve(
@@ -828,8 +830,11 @@ async fn shutdown_signal(pool: db::DbPool) {
             .await;
     };
 
+    // Windows has no SIGTERM. A server run by the Windows service supervisor
+    // is stopped through a named event instead; any other server never
+    // resolves this.
     #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    let terminate = crate::cli::service::windows::stop_requested();
 
     tokio::select! {
         _ = ctrl_c => {},
