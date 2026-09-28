@@ -1791,6 +1791,7 @@ dependencies = [
  "rand 0.8.6",
  "reqwest",
  "rmcp",
+ "rmcp-macros",
  "rusqlite",
  "rust-embed",
  "schemars 0.8.22",
