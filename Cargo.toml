@@ -138,6 +138,11 @@ similar = { version = "2", default-features = false, features = ["text"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Embeds the Windows application manifest (consoleAllocationPolicy) from
+# build.rs, including when cross-linking the MSVC release from Linux.
+[build-dependencies]
+embed-manifest = "1.5"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
@@ -153,6 +158,8 @@ http-body-util = "0.1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.28"
+# tests/build_contract.rs compiles build.rs as a module.
+embed-manifest = "1.5"
 
 # Argon2 password hashing is memory-hard by design; in unoptimized debug
 # builds each hash/verify costs ~0.4s of CPU, and the test suite performs
