@@ -31,14 +31,14 @@ lific init --auth-mode passwords --name "Ada Lovelace" --password "<PASSWORD>"
 
 ### Without a background service
 
-Windows, containers and Linux machines without a systemd user session have no service manager Lific can use. There, create the instance without one and run the server in a terminal you keep open:
+Containers and Linux machines without a systemd user session have no service manager Lific can use. There, create the instance without one and run the server in a terminal you keep open:
 
 ```bash
 lific init --no-service
 lific start
 ```
 
-[Windows](/docs/windows) walks through that platform in full.
+On Windows, `lific init` installs a per-user startup entry instead; [Windows](/docs/windows) walks through that platform in full.
 
 ### Where the files go
 

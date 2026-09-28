@@ -43,7 +43,7 @@ lific service stop
 lific service uninstall
 ```
 
-On Linux this is a systemd user unit at `~/.config/systemd/user/lific.service`, restarted on failure. Lific also runs `loginctl enable-linger` so the service keeps running after you log out; if that fails, `init` says so, and the server stops at logout until you enable lingering yourself. On macOS it is a LaunchAgent at `~/Library/LaunchAgents/dev.lific.plist`. Windows has no supported service manager, and every `lific service` command says so; see [Windows](/docs/windows#keep-it-running-with-task-scheduler).
+On Linux this is a systemd user unit at `~/.config/systemd/user/lific.service`, restarted on failure. Lific also runs `loginctl enable-linger` so the service keeps running after you log out; if that fails, `init` says so, and the server stops at logout until you enable lingering yourself. On macOS it is a LaunchAgent at `~/Library/LaunchAgents/dev.lific.plist`. On Windows it is a `Lific` value under your account's `Run` registry key that starts a supervisor Lific runs itself; see [Windows](/docs/windows#the-background-service).
 
 The service runs the `lific` binary you installed it with, with the configuration file you selected, and its working directory is that file's directory. A relative `database.path` resolves against the configuration file's directory in any case, never against the directory you ran a command from.
 
