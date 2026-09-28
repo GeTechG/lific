@@ -20,7 +20,7 @@
     type Page,
     type Activity,
   } from "../lib/api";
-  import { getRecents, type RecentEntry } from "../lib/home/recents";
+  import { getRecents, recentRoute, type RecentEntry } from "../lib/home/recents";
   import {
     selectActivityRate,
     type ActivityCountsReader,
@@ -291,11 +291,6 @@
   }
 
   // ── Recently viewed ────────────────────────────────────────────
-
-  function recentDest(e: RecentEntry): string {
-    const seg = e.type === "issue" ? "issues" : e.type === "page" ? "pages" : "plans";
-    return `/${e.project}/${seg}/${e.routeId}`;
-  }
 
   function recentRelative(ts: number): string {
     const diffMs = Date.now() - ts;
@@ -588,7 +583,7 @@
                     <button
                       class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left
                              hover:bg-[var(--bg-subtle)] transition-colors"
-                      onclick={() => navigate(recentDest(r))}
+                      onclick={() => navigate(recentRoute(r))}
                     >
                       {#if r.type === "issue"}
                         <CircleDot size={13} class="shrink-0 text-[var(--text-faint)]" />

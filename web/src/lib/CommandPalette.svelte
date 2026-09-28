@@ -4,7 +4,10 @@
   // One input that understands what you mean:
   //   "OMN156" / "omn 156" / "OMN-156"  → issue OMN-156, resolved directly
   //   "lif doc 3" / "LIF-DOC-3"         → that page
-  //   "156"                              → issue #156 probed in EVERY project
+  //   "156" / "#156"                     → issue #156 probed in EVERY project,
+  //                                        the current project's pinned first
+  //   "doc 3"                            → page 3 of the current project
+  //   (empty)                            → recently viewed, then projects
   //   anything else                      → local search over the selected
   //                                        project's warm read model, merged
   //                                        with client fuzzy over projects,
@@ -34,22 +37,28 @@
   import { fuzzyMatch } from "./fuzzy";
   import { mobileNavState } from "./mobileNavState.svelte";
   import {
+    CURRENT_PROJECT_REF_SCORE,
+    EXACT_REF_SCORE,
     LOCAL_HIT_SERVER_THRESHOLD,
     dedupeByIdentifier,
     dedupeByKey,
     isStaleSearch,
     localScoreToPaletteScore,
+    parseRefQuery,
     preserveSelection,
+    refIdentifier,
     searchLocalDocsPerKind,
+    type RefQuery,
   } from "./paletteSearch";
-  import { cachedProject, getProjectModel } from "./sync/readModel.svelte";
+  import { cachedProject, getProjectModel, peekProjectModel } from "./sync/readModel.svelte";
+  import { getRecents, recentRoute } from "./home/recents";
   import { safeLabelColor } from "./labelColors";
   import { commandPaletteState } from "./commandPaletteState.svelte";
   import { shortcutHelpState } from "./shortcutHelpState.svelte";
   import ProjectIcon from "./ProjectIcon.svelte";
   import {
     Search, CircleDot, FileText, Layers, FolderClosed, Box, CornerDownLeft,
-    Zap, ChevronRight, X,
+    Zap, ChevronRight, X, ListChecks,
   } from "lucide-svelte";
   import { tick, untrack } from "svelte";
   import StatusIcon from "./StatusIcon.svelte";
@@ -224,17 +233,21 @@
   // ── Results ──────────────────────────────────────────
 
   type PaletteResult = {
-    kind: "issue" | "page" | "project" | "module" | "folder";
+    kind: "issue" | "page" | "plan" | "project" | "module" | "folder";
     title: string;
     identifier?: string;
     sub?: string;
     subIsSnippet?: boolean;
     emoji?: string | null;
+    /** Issue status, when known, drawn as the row's icon. */
+    status?: string;
     route: string;
     score: number;
     remote?: boolean;
     /** Server hit that contains only some of the query's words. */
     partial?: boolean;
+    /** A recently viewed item, listed in its own group on an empty query. */
+    recent?: boolean;
   };
 
   type SnippetSegment = { text: string; highlighted: boolean };
@@ -271,11 +284,12 @@
   }
 
   const GROUP_ORDER: PaletteResult["kind"][] = [
-    "issue", "page", "project", "module", "folder",
+    "issue", "page", "plan", "project", "module", "folder",
   ];
   const GROUP_LABEL: Record<PaletteResult["kind"], string> = {
     issue: "Issues",
     page: "Pages",
+    plan: "Plans",
     project: "Projects",
     module: "Modules",
     folder: "Folders",
@@ -305,6 +319,9 @@
     if (mode.type !== "root") return [] as PaletteAction[];
     const q = query.trim();
     if (!q) return allActions;
+    // A reference is navigation. Actions list above results, so letting
+    // one fuzzy-match "34" would bury the issue it names.
+    if (parseRefQuery(q)) return [] as PaletteAction[];
     return allActions
       .map((a) => ({ a, m: fuzzyMatch(q, a.title) }))
       .filter((x) => x.m !== null && x.m.score >= 0.3)
@@ -328,19 +345,27 @@
   let grouped = $derived.by(() => {
     // Nav results sit after the action list in the flat selection order.
     let flatIdx = mode.type === "root" ? actionHits.length : 0;
+    const recent = results.filter((r) => r.recent);
     const groups = [false, true].flatMap((remote) => {
       const section = GROUP_ORDER.map((kind, gi) => {
-        const rs = results.filter((r) => r.kind === kind && Boolean(r.remote) === remote);
+        const rs = results.filter(
+          (r) => !r.recent && r.kind === kind && Boolean(r.remote) === remote,
+        );
         return { kind, gi, rs, remote, best: rs.reduce((m, r) => Math.max(m, r.score), 0) };
       }).filter((g) => g.rs.length > 0);
       return section.sort((a, b) => b.best - a.best || a.gi - b.gi);
     });
-    return groups.map((g) => ({
+    const labelled = groups.map((g) => ({
       label: g.remote
         ? g.rs.some((r) => r.partial)
           ? `${GROUP_LABEL[g.kind]} (server, partial matches)`
           : `${GROUP_LABEL[g.kind]} (server)`
         : GROUP_LABEL[g.kind],
+      rs: g.rs,
+    }));
+    if (recent.length > 0) labelled.unshift({ label: "Recent", rs: recent });
+    return labelled.map((g) => ({
+      label: g.label,
       entries: g.rs.map((r) => ({ r, flatIdx: flatIdx++ })),
     }));
   });
@@ -351,78 +376,113 @@
     );
   }
 
+  /** The project a reference points into. An unqualified one ("34",
+   *  "doc 3") means the project you are in. */
+  function refProject(ref: RefQuery): Project | null {
+    return ref.project === null ? activeProject() : (projectByIdent(ref.project) ?? null);
+  }
+
+  /** Unqualified references into the current project are pinned above
+   *  everything; any other exact reference ranks as before. */
+  function refScore(ref: RefQuery, project: Project): number {
+    return ref.project === null && project.id === activeProject()?.id
+      ? CURRENT_PROJECT_REF_SCORE
+      : EXACT_REF_SCORE;
+  }
+
+  function issueResult(
+    project: Project,
+    issue: { title: string; identifier: string; status: string },
+    score: number,
+  ): PaletteResult {
+    return {
+      kind: "issue",
+      title: issue.title,
+      identifier: issue.identifier,
+      sub: project.name,
+      status: issue.status,
+      route: `/${project.identifier}/issues/${issue.identifier}`,
+      score,
+    };
+  }
+
+  /** Resolve a reference from a warm replica, without a network call, so
+   *  "34" lands on the current project's issue in the same frame. Only
+   *  peeks: a lookup must not register a replica for an unopened project. */
+  function modelRefHit(project: Project, ref: RefQuery, score: number): PaletteResult | null {
+    const model = peekProjectModel(project.id);
+    if (model?.status !== "ready") return null;
+    const want = refIdentifier(project.identifier, ref).toLowerCase();
+    if (ref.kind === "issue") {
+      const row = model.issueList.find((r) => r.identifier.toLowerCase() === want);
+      return row ? issueResult(project, row, score) : null;
+    }
+    const page = model.pageList.find((r) => r.identifier.toLowerCase() === want);
+    return page
+      ? {
+          kind: "page",
+          title: page.title,
+          identifier: page.identifier,
+          sub: project.name,
+          route: `/${project.identifier}/pages/${page.id}`,
+          score,
+        }
+      : null;
+  }
+
+  /** The synchronous half of the reference fast path. */
+  function localRefHits(q: string): PaletteResult[] {
+    const ref = parseRefQuery(q);
+    if (!ref) return [];
+    const project = refProject(ref);
+    if (!project) return [];
+    const hit = modelRefHit(project, ref, refScore(ref, project));
+    return hit ? [hit] : [];
+  }
+
   /** Identifier fast-paths. Returns results for exact-shape queries. */
   async function identifierHits(q: string): Promise<PaletteResult[]> {
-    const hits: PaletteResult[] = [];
-    const compact = q.trim();
+    const ref = parseRefQuery(q);
+    if (!ref) return [];
 
-    // PROJ-DOC-n / "proj doc n" → page
-    const pageMatch = compact.match(/^([a-z][a-z0-9_]*)[\s-]*doc[\s-]*(\d+)$/i);
-    if (pageMatch) {
-      const project = projectByIdent(pageMatch[1]);
-      if (project) {
-        const res = await listPages(project.id);
-        if (res.ok) {
-          const seq = parseInt(pageMatch[2]);
-          const page = res.data.find((p) => p.sequence === seq);
-          if (page) {
-            hits.push({
-              kind: "page",
-              title: page.title,
-              identifier: page.identifier,
-              sub: project.name,
-              route: `/${project.identifier}/pages/${page.id}`,
-              score: 3,
-            });
-          }
-        }
-      }
-      return hits;
+    // PROJ-DOC-n / "proj doc n" / "doc n" → page
+    if (ref.kind === "page") {
+      const project = refProject(ref);
+      if (!project) return [];
+      const res = await listPages(project.id);
+      if (!res.ok) return [];
+      const page = res.data.find((p) => p.sequence === ref.n);
+      return page
+        ? [{
+            kind: "page",
+            title: page.title,
+            identifier: page.identifier,
+            sub: project.name,
+            route: `/${project.identifier}/pages/${page.id}`,
+            score: refScore(ref, project),
+          }]
+        : [];
     }
 
     // PROJ-n / "proj n" / "PROJn" → issue
-    const issueMatch = compact.match(/^([a-z][a-z0-9_]*?)[\s-]*(\d+)$/i);
-    if (issueMatch && projectByIdent(issueMatch[1])) {
-      const project = projectByIdent(issueMatch[1])!;
-      const ident = `${project.identifier}-${parseInt(issueMatch[2])}`;
-      const res = await resolveIssue(ident);
-      if (res.ok) {
-        hits.push({
-          kind: "issue",
-          title: res.data.title,
-          identifier: res.data.identifier,
-          sub: `${project.name} · ${res.data.status}`,
-          route: `/${project.identifier}/issues/${res.data.identifier}`,
-          score: 3,
-        });
-      }
-      return hits;
+    if (ref.project !== null) {
+      const project = projectByIdent(ref.project);
+      if (!project) return [];
+      const res = await resolveIssue(refIdentifier(project.identifier, ref));
+      return res.ok ? [issueResult(project, res.data, EXACT_REF_SCORE)] : [];
     }
 
-    // Bare number → probe every project for issue #n
-    const bare = compact.match(/^(\d+)$/);
-    if (bare) {
-      const n = parseInt(bare[1]);
-      const probes = await Promise.all(
-        catalog.projects.map(async (p) => {
-          const res = await resolveIssue(`${p.identifier}-${n}`);
-          return res.ok ? { project: p, issue: res.data } : null;
-        }),
-      );
-      for (const hit of probes) {
-        if (!hit) continue;
-        hits.push({
-          kind: "issue",
-          title: hit.issue.title,
-          identifier: hit.issue.identifier,
-          sub: `${hit.project.name} · ${hit.issue.status}`,
-          route: `/${hit.project.identifier}/issues/${hit.issue.identifier}`,
-          score: 3,
-        });
-      }
-    }
-
-    return hits;
+    // Bare number → probe every project for issue #n. The current project
+    // leads (and scores above the rest), so Enter means "#n here".
+    const current = activeProject();
+    const others = catalog.projects.filter((p) => p.id !== current?.id);
+    const probes = await Promise.all(
+      (current ? [current, ...others] : others).map(async (p) => {
+        const res = await resolveIssue(refIdentifier(p.identifier, ref));
+        return res.ok ? issueResult(p, res.data, refScore(ref, p)) : null;
+      }),
+    );
+    return probes.filter((h): h is PaletteResult => h !== null);
   }
 
   /** Client fuzzy over the cached catalog (projects/modules/folders). */
@@ -519,6 +579,7 @@
       title: doc.title,
       identifier: doc.identifier,
       sub: doc.preview || project.name,
+      status: doc.kind === "issue" ? doc.status : undefined,
       route:
         doc.kind === "page"
           ? `/${project.identifier}/pages/${doc.id}`
@@ -560,9 +621,57 @@
       return true;
     });
 
-    selectedIdx = keepSelection
+    // Only a cursor the user moved is worth keeping. An untouched one sits on
+    // the top row by default, and a late exact reference belongs there.
+    selectedIdx = keepSelection && cursorMoved
       ? preserveSelection(previousKey, flatItems.map(flatKey), previousIdx)
       : 0;
+  }
+
+  /** Set by the arrow keys, cleared by every new query. */
+  let cursorMoved = false;
+
+  const RECENT_CAP = 5;
+
+  /** Recently viewed items for the empty palette, minus the one on screen.
+   *  Titles and statuses refresh from a warm replica when there is one, and
+   *  an item that replica no longer has is dropped as deleted or moved. */
+  function recentResults(): PaletteResult[] {
+    const here = route.toLowerCase();
+    const known = new Set(catalog.projects.map((p) => p.identifier.toLowerCase()));
+    const out: PaletteResult[] = [];
+    for (const e of getRecents()) {
+      if (out.length >= RECENT_CAP) break;
+      const path = recentRoute(e);
+      if (path.toLowerCase() === here) continue;
+      if (known.size > 0 && !known.has(e.project.toLowerCase())) continue;
+      const project = projectByIdent(e.project) ?? cachedProject(e.project);
+      const r: PaletteResult = {
+        kind: e.type,
+        title: e.title,
+        identifier: e.identifier,
+        sub: project?.name ?? e.project,
+        route: path,
+        score: 1,
+        recent: true,
+      };
+      const model = project ? peekProjectModel(project.id) : null;
+      if (model?.status === "ready" && e.type !== "plan") {
+        if (e.type === "issue") {
+          const want = e.identifier.toLowerCase();
+          const row = model.issueList.find((i) => i.identifier.toLowerCase() === want);
+          if (!row) continue;
+          r.title = row.title;
+          r.status = row.status;
+        } else {
+          const row = model.pages.get(Number(e.routeId));
+          if (!row) continue;
+          r.title = row.title;
+        }
+      }
+      out.push(r);
+    }
+    return out;
   }
 
   // The synchronous half of the last search, replayed when the server half
@@ -577,28 +686,32 @@
   /** Everything answerable without a network call. Renders immediately. */
   function runLocal(q: string): number {
     const trimmed = q.trim();
+    cursorMoved = false;
 
-    // Empty query: quick project switcher.
+    // Empty query: jump back to something recent, or switch project.
     if (!trimmed) {
       pendingQuery = "";
       pendingLocal = [];
       pendingCatalog = [];
       pendingProjectIdent = activeProjectIdent;
-      results = catalog.projects.map((p) => ({
-        kind: "project" as const,
-        title: p.name,
-        identifier: p.identifier,
-        emoji: p.emoji,
-        route: `/${p.identifier}/overview`,
-        score: 1,
-      }));
+      results = [
+        ...recentResults(),
+        ...catalog.projects.map((p) => ({
+          kind: "project" as const,
+          title: p.name,
+          identifier: p.identifier,
+          emoji: p.emoji,
+          route: `/${p.identifier}/overview`,
+          score: 1,
+        })),
+      ];
       selectedIdx = 0;
       return 0;
     }
 
     pendingQuery = trimmed;
     pendingProjectIdent = activeProjectIdent;
-    pendingLocal = localHits(trimmed);
+    pendingLocal = [...localRefHits(trimmed), ...localHits(trimmed)];
     pendingCatalog = catalogHits(trimmed);
     publish([...pendingLocal, ...pendingCatalog], false);
     return pendingLocal.length;
@@ -632,7 +745,10 @@
     }
     // The local rows must come from the same project as this response, or
     // the merge would splice project A's issues into project B's results.
-    if (pendingProjectIdent !== issued.projectIdent || pendingQuery !== trimmed) return;
+    if (pendingProjectIdent !== issued.projectIdent || pendingQuery !== trimmed) {
+      enterWhenSettled = null;
+      return;
+    }
 
     const merged: PaletteResult[] = [...idHits, ...pendingLocal, ...pendingCatalog];
 
@@ -670,6 +786,15 @@
     }
 
     publish(merged, true);
+
+    // Enter pressed while this reference was still resolving: open the top
+    // result now that it is the right one.
+    if (enterWhenSettled) {
+      const { newTab } = enterWhenSettled;
+      enterWhenSettled = null;
+      const it = flatItems[selectedIdx];
+      if (it) pickItem(it, newTab);
+    }
   }
 
   /** Cancel the debounce AND invalidate any response already in flight, so a
@@ -680,7 +805,34 @@
       clearTimeout(debounce);
       debounce = null;
     }
+    flushRemote = null;
+    enterWhenSettled = null;
     searching = false;
+  }
+
+  // Typing "fic 34⏎" faster than the debounce used to open whatever the
+  // local pass had ranked first. For a reference whose answer is still on
+  // its way, Enter is remembered and carried out when the answer lands.
+  let flushRemote: (() => void) | null = null;
+  let enterWhenSettled: { newTab: boolean } | null = null;
+
+  function shouldAwaitReference(): boolean {
+    if (mode.type !== "root" || cursorMoved) return false;
+    if (!debounce && !searching) return false;
+    const ref = parseRefQuery(query);
+    if (!ref) return false;
+    const current = activeProject();
+    // A bare number probes every project even outside one; anything else
+    // needs a project to resolve against.
+    if (!refProject(ref) && !(ref.kind === "issue" && ref.project === null)) return false;
+    const top = flatItems[0];
+    if (top?.t === "nav" && top.r.score >= EXACT_REF_SCORE) {
+      // Already resolved locally. An unqualified reference inside a project
+      // is only settled once that project's own match is on top.
+      if (ref.project !== null || !current) return false;
+      if (top.r.score >= CURRENT_PROJECT_REF_SCORE) return false;
+    }
+    return true;
   }
 
   function runSearch(q: string) {
@@ -715,10 +867,14 @@
     const q = query;
     const local = runLocal(q);
     if (!q.trim()) return;
-    debounce = setTimeout(() => {
+    const fire = () => {
+      if (debounce) clearTimeout(debounce);
       debounce = null;
+      flushRemote = null;
       void runRemote(q, gen, local < LOCAL_HIT_SERVER_THRESHOLD);
-    }, 120);
+    };
+    flushRemote = fire;
+    debounce = setTimeout(fire, 120);
   }
 
   // ── Selection + dispatch ─────────────────────────────
@@ -739,10 +895,20 @@
     ];
   });
 
-  function pickItem(it: FlatItem) {
+  // ⌘ on Mac, Ctrl elsewhere, for the footer hint.
+  const isMac =
+    typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.platform);
+
+  /** Routes are hash paths, so a new tab is this page with another hash. */
+  function openInNewTab(path: string) {
+    window.open(`${location.pathname}${location.search}#${path}`, "_blank", "noopener");
+  }
+
+  function pickItem(it: FlatItem, newTab = false) {
     if (it.t === "nav") {
       hide();
-      navigate(it.r.route);
+      if (newTab) openInNewTab(it.r.route);
+      else navigate(it.r.route);
     } else if (it.t === "action") {
       enterAction(it.a);
     } else {
@@ -764,16 +930,24 @@
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      cursorMoved = true;
       selectedIdx = Math.min(selectedIdx + 1, flatItems.length - 1);
       scrollSelectedIntoView();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      cursorMoved = true;
       selectedIdx = Math.max(selectedIdx - 1, 0);
       scrollSelectedIntoView();
     } else if (e.key === "Enter") {
       e.preventDefault();
+      const newTab = e.metaKey || e.ctrlKey;
+      if (shouldAwaitReference()) {
+        enterWhenSettled = { newTab };
+        flushRemote?.();
+        return;
+      }
       const it = flatItems[selectedIdx];
-      if (it) pickItem(it);
+      if (it) pickItem(it, newTab);
     } else if (e.key === "Backspace" && !query && mode.type === "submenu") {
       e.preventDefault();
       stepBack();
@@ -842,7 +1016,7 @@
               ? "Filter…"
               : narrow
                 ? "Jump or act…"
-                : "Jump or act… (try OMN156, doc 3, or “status”)"}
+                : "Jump or act… (try 34, OMN156, doc 3, or “status”)"}
           oninput={onInput}
           onkeydown={onInputKeydown}
         />
@@ -978,17 +1152,27 @@
                   ? 'bg-[var(--accent-subtle)]'
                   : 'hover:bg-[var(--bg-subtle)]'}"
                 data-flat-idx={flatIdx}
-                onclick={() => pickItem({ t: "nav", r })}
+                onclick={(e) => pickItem({ t: "nav", r }, e.metaKey || e.ctrlKey)}
+                onmousedown={(e) => { if (e.button === 1) e.preventDefault(); }}
+                onauxclick={(e) => {
+                  if (e.button !== 1) return;
+                  e.preventDefault();
+                  pickItem({ t: "nav", r }, true);
+                }}
                 onmouseenter={() => { selectedIdx = flatIdx; }}
               >
                 <!-- Kind icon (project/module emoji wins when set) -->
                 <span class="size-5 flex items-center justify-center shrink-0 text-[var(--text-faint)]">
                   {#if r.emoji}
                     <ProjectIcon value={r.emoji} size={15} />
+                  {:else if r.kind === "issue" && r.status}
+                    <StatusIcon status={r.status} size={14} />
                   {:else if r.kind === "issue"}
                     <CircleDot size={14} />
                   {:else if r.kind === "page"}
                     <FileText size={14} />
+                  {:else if r.kind === "plan"}
+                    <ListChecks size={14} />
                   {:else if r.kind === "module"}
                     <Layers size={14} />
                   {:else if r.kind === "folder"}
@@ -1032,6 +1216,17 @@
           {/each}
         {/if}
       </div>
+      {#if mode.type === "root" && flatItems.length > 0}
+        <!-- Keyboard legend; phones have no keyboard to hint at. -->
+        <div
+          class="hidden sm:flex shrink-0 items-center gap-4 px-4 py-1.5 border-t border-[var(--border)]
+                 text-micro text-[var(--text-faint)]"
+        >
+          <span><kbd class="font-mono">↑↓</kbd> move</span>
+          <span><kbd class="font-mono">↵</kbd> open</span>
+          <span><kbd class="font-mono">{isMac ? "⌘" : "Ctrl"}↵</kbd> new tab</span>
+        </div>
+      {/if}
       {/if}
     </div>
   </div>

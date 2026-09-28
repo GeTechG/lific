@@ -26,6 +26,12 @@ export interface RecentEntry {
   ts: number;
 }
 
+/** The app route for a recent entry's detail view. */
+export function recentRoute(e: Pick<RecentEntry, "type" | "project" | "routeId">): string {
+  const seg = e.type === "issue" ? "issues" : e.type === "page" ? "pages" : "plans";
+  return `/${e.project}/${seg}/${e.routeId}`;
+}
+
 const KEY = "lific_recents";
 const CAP = 15;
 

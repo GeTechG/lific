@@ -80,6 +80,46 @@ export const SERVER_SCORE_MAX = 1;
 export const LOCAL_SCORE_FLOOR = 1.2;
 export const LOCAL_SCORE_CEIL = 2.5;
 
+/** An exact reference ("LIF-34", "lif 34", or "34" found in some project). */
+export const EXACT_REF_SCORE = 3;
+
+/** An unqualified reference resolved in the project you are looking at.
+ *  "34" typed while reading FIC-59 means FIC-34, so it outranks the same
+ *  number found in every other project, and everything else besides. */
+export const CURRENT_PROJECT_REF_SCORE = 4;
+
+/** A query that names one issue or page by number. `project` is null when
+ *  the query leaves it implied ("34", "#34", "doc 3"), which the palette
+ *  reads as "in the project I am in". */
+export interface RefQuery {
+  kind: "issue" | "page";
+  project: string | null;
+  n: number;
+}
+
+/** Parse a reference-shaped query, or return null for ordinary text.
+ *  Shapes: `34`, `#34`, `doc 3`, `LIF34`, `lif 34`, `LIF-34`, `lif doc 3`,
+ *  `LIF-DOC-3`. Whether the project exists is the caller's question. */
+export function parseRefQuery(query: string): RefQuery | null {
+  const q = query.trim();
+  let m = q.match(/^#?(\d+)$/);
+  if (m) return { kind: "issue", project: null, n: parseInt(m[1], 10) };
+  m = q.match(/^doc[\s-]*(\d+)$/i);
+  if (m) return { kind: "page", project: null, n: parseInt(m[1], 10) };
+  m = q.match(/^([a-z][a-z0-9_]*)[\s-]*doc[\s-]*(\d+)$/i);
+  if (m) return { kind: "page", project: m[1], n: parseInt(m[2], 10) };
+  m = q.match(/^([a-z][a-z0-9_]*?)[\s-]*(\d+)$/i);
+  if (m) return { kind: "issue", project: m[1], n: parseInt(m[2], 10) };
+  return null;
+}
+
+/** The canonical identifier a reference names within a project. */
+export function refIdentifier(projectIdent: string, ref: RefQuery): string {
+  return ref.kind === "page"
+    ? `${projectIdent}-DOC-${ref.n}`
+    : `${projectIdent}-${ref.n}`;
+}
+
 /** Anything the palette can search locally: one skinny row from the read
  *  model. `IssueRow` and `PageRow` both satisfy this structurally. */
 export interface PaletteDoc {

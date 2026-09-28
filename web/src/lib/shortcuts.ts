@@ -82,6 +82,7 @@ export const SHORTCUTS: ShortcutEntry[] = [
   // ── Command palette (CommandPalette.svelte) ──────────────
   { keys: "↓ ↑", label: "Move selection", scope: "palette" },
   { keys: "Enter", label: "Open / run", scope: "palette" },
+  { keys: "⌘ Enter", label: "Open in a new tab", scope: "palette" },
   { keys: "⌫", label: "Step back out of a submenu", scope: "palette" },
   { keys: "Esc", label: "Close", scope: "palette" },
 

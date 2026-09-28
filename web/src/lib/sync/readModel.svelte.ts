@@ -274,6 +274,13 @@ export function getProjectModel(projectId: number): ProjectReadModel {
   return model;
 }
 
+/** The model for a project only if one already exists. Unlike
+ *  `getProjectModel`, this never registers a replica, so a lookup cannot
+ *  make a later realtime event bootstrap a project nobody opened. */
+export function peekProjectModel(projectId: number): ProjectReadModel | null {
+  return models.get(modelKey(projectId)) ?? null;
+}
+
 /** Get a project's model, bootstrapping it on first access and catching it
  *  up on every subsequent one. The returned model is renderable immediately
  *  — warm on a revisit, empty-with-status-`loading` on a cold start. */

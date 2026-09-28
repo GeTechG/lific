@@ -4,6 +4,8 @@ import {
   LOCAL_HIT_SERVER_THRESHOLD,
   LOCAL_SCORE_CEIL,
   LOCAL_SCORE_FLOOR,
+  CURRENT_PROJECT_REF_SCORE,
+  EXACT_REF_SCORE,
   PREFIX_MIN_TERM,
   QUALITY,
   SERVER_SCORE_MAX,
@@ -13,7 +15,9 @@ import {
   isStaleSearch,
   localScoreToPaletteScore,
   matchQuality,
+  parseRefQuery,
   preserveSelection,
+  refIdentifier,
   refNumber,
   scoreDoc,
   searchLocalDocs,
@@ -238,6 +242,12 @@ describe("score bands", () => {
     expect(localScoreToPaletteScore(1)).toBe(LOCAL_SCORE_CEIL);
   });
 
+  test("the current project's reference outranks every other result", () => {
+    expect(CURRENT_PROJECT_REF_SCORE).toBeGreaterThan(EXACT_REF_SCORE);
+    expect(EXACT_REF_SCORE).toBeGreaterThan(LOCAL_SCORE_CEIL);
+    expect(EXACT_REF_SCORE).toBeGreaterThan(2.6);
+  });
+
   test("the mapping is monotonic and clamped", () => {
     expect(localScoreToPaletteScore(0.5)).toBeGreaterThan(localScoreToPaletteScore(0.25));
     expect(localScoreToPaletteScore(-1)).toBe(LOCAL_SCORE_FLOOR);
@@ -250,6 +260,41 @@ describe("score bands", () => {
     const few = searchLocalDocs("palette", docs.slice(0, 2));
     expect(many.length < LOCAL_HIT_SERVER_THRESHOLD).toBe(false);
     expect(few.length < LOCAL_HIT_SERVER_THRESHOLD).toBe(true);
+  });
+});
+
+describe("parseRefQuery", () => {
+  test("a bare or hashed number leaves the project to the caller", () => {
+    expect(parseRefQuery("34")).toEqual({ kind: "issue", project: null, n: 34 });
+    expect(parseRefQuery(" #34 ")).toEqual({ kind: "issue", project: null, n: 34 });
+  });
+
+  test("doc n names a page in the current project", () => {
+    expect(parseRefQuery("doc 3")).toEqual({ kind: "page", project: null, n: 3 });
+    expect(parseRefQuery("DOC-3")).toEqual({ kind: "page", project: null, n: 3 });
+  });
+
+  test("qualified issue references in every spelling", () => {
+    for (const q of ["FIC34", "fic 34", "FIC-34", "fic-034"]) {
+      expect(parseRefQuery(q)).toEqual({ kind: "issue", project: expect.stringMatching(/^fic$/i), n: 34 });
+    }
+  });
+
+  test("qualified page references in every spelling", () => {
+    for (const q of ["lif doc 3", "LIF-DOC-3", "lifdoc3"]) {
+      expect(parseRefQuery(q)).toEqual({ kind: "page", project: expect.stringMatching(/^lif$/i), n: 3 });
+    }
+  });
+
+  test("ordinary text is not a reference", () => {
+    for (const q of ["", "status", "fix 34 bugs", "34 bugs", "#", "3.4"]) {
+      expect(parseRefQuery(q)).toBeNull();
+    }
+  });
+
+  test("refIdentifier builds the canonical identifier", () => {
+    expect(refIdentifier("FIC", { kind: "issue", project: null, n: 34 })).toBe("FIC-34");
+    expect(refIdentifier("LIF", { kind: "page", project: "lif", n: 3 })).toBe("LIF-DOC-3");
   });
 });
 
