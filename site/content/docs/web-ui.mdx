@@ -140,11 +140,12 @@ Shortcuts do not fire while you are typing in a field. The peek panel, command p
 The command palette finds things by identifier or by text:
 
 - `APP156`, `app 156` and `APP-156` go straight to that issue.
-- `app doc 3` or `APP-DOC-3` opens that page.
-- A bare number such as `156` looks for that issue number in every project.
+- `app doc 3` or `APP-DOC-3` opens that page, and `doc 3` opens page 3 of the project you are in.
+- A bare number such as `156` (or `#156`) looks for that issue number in every project. The current project's issue always comes first, so `Enter` opens it. If you press `Enter` before the number has resolved, the palette waits for it rather than opening something else.
+- With nothing typed, the palette lists the items you viewed most recently, then your projects.
 - Anything else searches the current project's issues and pages as you type, along with project, module and folder names, and adds full-text results from the server when there are few local matches. When no server result contains every word, that group is labelled "partial matches" and shows results containing any of them.
 
-On an issue or page, the palette also offers actions for it, such as setting its status or renaming it.
+`Cmd/Ctrl+Enter`, a `Cmd/Ctrl`-click or a middle click opens a result in a new tab. On an issue or page, the palette also offers actions for it, such as setting its status or renaming it.
 
 A copy control sits beside identifiers in the breadcrumb trail, on board cards and in the peek panel; list rows have the same action in their right-click menu. It shows a check mark once the identifier is on your clipboard.
 
