@@ -467,6 +467,27 @@ pub struct ManageResourceInput {
     pub emoji: Option<String>,
 }
 
+impl ManageResourceInput {
+    /// Normalize quote wrappers on scalar arguments at the tool boundary.
+    /// Keep descriptions verbatim and current_name intact for exact-name lookup.
+    #[must_use]
+    pub(super) fn normalize_quotes(self) -> Self {
+        use super::arguments::unquote;
+
+        Self {
+            resource_type: unquote(self.resource_type),
+            action: unquote(self.action),
+            project: self.project.map(unquote),
+            name: self.name.map(unquote),
+            identifier: self.identifier.map(unquote),
+            status: self.status.map(unquote),
+            color: self.color.map(unquote),
+            emoji: self.emoji.map(unquote),
+            ..self
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddCommentInput {

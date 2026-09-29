@@ -3912,7 +3912,7 @@ impl LificMcp {
         description = "Create or update a project, module, label, or folder. Create project requires name and identifier; project update requires project=<IDENT>; module/label/folder create requires project and name; module/label/folder update requires project and current_name. Use delete for deletion."
     )]
     fn manage_resource(&self, Parameters(input): Parameters<ManageResourceInput>) -> String {
-        self.manage_resource_inner(input)
+        self.manage_resource_inner(input.normalize_quotes())
             .unwrap_or_else(error_response)
     }
 
