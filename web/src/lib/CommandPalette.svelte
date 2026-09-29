@@ -268,7 +268,7 @@
       if (generation !== catalogGeneration) return;
       catalog = { projects, modules, folders };
       catalogAt = Date.now();
-      if (open && query.trim()) refreshCatalogSearch();
+      if (open && mode.type === "root" && query.trim()) refreshCatalogSearch();
     })().finally(() => {
       catalogLoad = null;
       if (open && loadedGeneration !== null && loadedGeneration !== catalogGeneration) {
