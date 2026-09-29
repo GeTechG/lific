@@ -12,39 +12,38 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::db::queries;
 use crate::error::LificError;
 
-/// The entities an HTML-escaping client produces for text.
+/// Entity suffixes following `&` that an HTML-escaping client produces for text.
 const ENTITIES: [(&str, char); 6] = [
-    ("&amp;", '&'),
-    ("&lt;", '<'),
-    ("&gt;", '>'),
-    ("&quot;", '"'),
-    ("&#39;", '\''),
-    ("&#x27;", '\''),
+    ("amp;", '&'),
+    ("lt;", '<'),
+    ("gt;", '>'),
+    ("quot;", '"'),
+    ("#39;", '\''),
+    ("#x27;", '\''),
 ];
 
 /// Decode [`ENTITIES`] in one pass (so `&amp;lt;` becomes `&lt;`, not `<`).
 /// `None` when the name contains none of them.
 pub(super) fn decode_html_entities(name: &str) -> Option<String> {
-    let mut decoded = String::with_capacity(name.len());
-    let mut rest = name;
-    let mut changed = false;
-    while let Some(at) = rest.find('&') {
-        decoded.push_str(&rest[..at]);
-        let tail = &rest[at..];
-        match ENTITIES.iter().find(|(entity, _)| tail.starts_with(entity)) {
-            Some((entity, ch)) => {
-                decoded.push(*ch);
-                rest = &tail[entity.len()..];
-                changed = true;
-            }
-            None => {
-                decoded.push('&');
-                rest = &tail[1..];
-            }
-        }
-    }
-    decoded.push_str(rest);
-    changed.then_some(decoded)
+    let mut replacements = name.match_indices('&').filter_map(|(start, _)| {
+        let tail = &name[start + 1..];
+        ENTITIES.iter().find_map(|(entity, ch)| {
+            tail.starts_with(entity)
+                .then_some((start, entity.len() + 1, *ch))
+        })
+    });
+    let first = replacements.next()?;
+    // Allocate only when an entity matches. Decoding cannot expand the input.
+    let (mut decoded, end) = std::iter::once(first).chain(replacements).fold(
+        (String::with_capacity(name.len()), 0),
+        |(mut decoded, end), (start, len, ch)| {
+            decoded.push_str(&name[end..start]);
+            decoded.push(ch);
+            (decoded, start + len)
+        },
+    );
+    decoded.push_str(&name[end..]);
+    Some(decoded)
 }
 
 /// Try the original name, then the name without one outer quote pair, then
@@ -59,22 +58,16 @@ fn with_decoded_retry<T>(
         other => return other,
     };
     let unquoted = crate::mcp::arguments::unquote_if_wrapped(name);
-    if let Some(unquoted) = unquoted {
-        match lookup(unquoted) {
-            Err(LificError::NotFound(_)) => {}
-            other => return other,
-        }
-    }
-    for decoded in std::iter::once(name)
+    let decoded = std::iter::once(name)
         .chain(unquoted)
         .filter_map(decode_html_entities)
-    {
-        match lookup(&decoded) {
-            Err(LificError::NotFound(_)) => {}
-            other => return other,
-        }
-    }
-    Err(LificError::NotFound(original_message))
+        .map(|candidate| lookup(&candidate));
+    unquoted
+        .into_iter()
+        .map(&lookup)
+        .chain(decoded)
+        .find(|result| !matches!(result, Err(LificError::NotFound(_))))
+        .unwrap_or_else(|| Err(LificError::NotFound(original_message)))
 }
 
 pub(super) fn module_id(conn: &Connection, project_id: i64, name: &str) -> Result<i64, LificError> {
