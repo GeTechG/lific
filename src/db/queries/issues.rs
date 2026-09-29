@@ -549,6 +549,31 @@ pub fn list_issues_page(
     })
 }
 
+/// [`count_issues_by_status`] for every project in one GROUP BY, keyed by
+/// project id (GitHub #87). A project without live issues has no entry.
+pub fn count_issues_by_status_all(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<i64, IssueStatusCounts>, LificError> {
+    let mut all: std::collections::HashMap<i64, IssueStatusCounts> =
+        std::collections::HashMap::new();
+    let mut stmt = conn.prepare_cached(
+        "SELECT project_id, status, COUNT(*) FROM issues
+         WHERE deleted_at IS NULL GROUP BY project_id, status",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (project_id, status, n) = row?;
+        all.entry(project_id).or_default().add(&status, n);
+    }
+    Ok(all)
+}
+
 /// Per-status issue counts for a project (LIF-161). One indexed GROUP BY
 /// scan — cheap even on large projects, unlike pulling every row (which the
 /// list endpoint caps anyway, so counting client-side undercounts).
@@ -566,18 +591,7 @@ pub fn count_issues_by_status(
     })?;
     for row in rows {
         let (status, n) = row?;
-        // Parsed rather than read as `Status` directly: an unparseable value
-        // can't be created through the API, but a hand-edited DB row still
-        // counts toward the total instead of failing the whole query.
-        match status.parse() {
-            Ok(Status::Backlog) => counts.backlog = n,
-            Ok(Status::Todo) => counts.todo = n,
-            Ok(Status::Active) => counts.active = n,
-            Ok(Status::Done) => counts.done = n,
-            Ok(Status::Cancelled) => counts.cancelled = n,
-            Err(_) => {}
-        }
-        counts.total += n;
+        counts.add(&status, n);
     }
     Ok(counts)
 }

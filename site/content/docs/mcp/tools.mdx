@@ -236,7 +236,7 @@ Lists projects, modules, labels, folders, pages, issues or plans. It is the disc
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `resource_type` | `string` | Yes | `project`, `module`, `label`, `folder`, `page`, `issue` or `plan`. |
-| `project` | `string` | No | Required for `issue`, `plan`, `module`, `label` and `folder` unless the session has a binding. Optional for `page`, where omitting it lists pages from every project you can see. Ignored for `project`. |
+| `project` | `string` | No | Required for `issue`, `plan`, `module`, `label` and `folder` unless the session has a binding. Optional for `page`, where omitting it lists pages from every project you can see. For `project`, lists only that project; you need `viewer` on it. |
 | `folder` | `string` | No | Pages only: folder name. Needs `project`. |
 | `label` | `string` | No | Pages only: label name. |
 | `status` | `string` | No | Pages: `draft`, `active`, `complete` or `archived`. Plans: `active`, `done` or `archived`. |
@@ -244,8 +244,18 @@ Lists projects, modules, labels, folders, pages, issues or plans. It is the disc
 | `order` | `string` | No | Pages only: `asc` (default) or `desc`. |
 | `limit` | `integer` | No | Issues and pages default to 100, plans to 50; all cap at 500. Ignored for projects, modules, labels and folders. |
 | `offset` | `integer` | No | Zero-based, for issues, pages and plans. |
+| `members` | `string[]` | No | Projects only: keep projects where any of these users has a role. `"me"` is you; name others by username, with or without `@`. `"all"` is rejected. |
+| `roles` | `string[]` | No | Projects only: the roles that count for `members`: `lead`, `maintainer`, `viewer` or `all` (default). Without `members`, means your own roles. |
+| `statuses` | `string[]` | No | Projects only: which per-status issue counts each row prints: `backlog`, `todo`, `active`, `done`, `cancelled` or `all` (default). `[]` prints none. |
+| `show_members` | `string[]` | No | Projects only: roles whose members are all named, uncapped: `lead`, `maintainer`, `viewer` or `all`. `[]` prints only counts per role. |
 
-Projects are sorted by recent activity, and each row carries its workable-issue count, active-plan count and how long ago anything happened. The issue listing takes no filters (its `label` is ignored); use `list_issues` to filter. Issue and page listings end with the next `offset` when more rows exist. The plan listing honors `limit` and `offset` but prints no paging hint, so request the next page yourself when a full page comes back.
+Projects are sorted by recent activity, and each row carries its workable-issue count, active-plan count and how long ago anything happened. It then shows the project's members by role, your own role, and its issue count per status:
+
+```text
+- APP | App (3 workable, last activity 2h ago) | lead @alice · maintainers @bob, @carol · 12 viewers | you: maintainer | 2 active · 5 todo · 9 backlog · 40 done
+```
+
+By default, leads and maintainers are named, up to five per role followed by `+N more`, and viewers are counted. `you: admin` marks an admin who holds no role in the project; `you:` is left out when you hold none and are not an admin. Deactivated accounts are left out of the roster. Zero counts are left out, and a project without issues shows `no issues`; when all its issues fall outside `statuses`, the chosen statuses print as `0 active · 0 todo`. `"me"` is the caller the permission checks see: a bot counts as its owner, and a session without a user-bound credential counts as the first admin. `members` only ever narrows the projects you can already see; it never reveals another user's projects that are hidden from you. When nothing matches, the call returns `No projects where @bob has a role (among projects you can see).` The issue listing takes no filters (its `label` is ignored); use `list_issues` to filter. Issue and page listings end with the next `offset` when more rows exist. The plan listing honors `limit` and `offset` but prints no paging hint, so request the next page yourself when a full page comes back.
 
 An unrecognized `resource_type` returns a line naming the accepted values.
 

@@ -498,6 +498,37 @@ pub struct IssueStatusCounts {
     pub total: i64,
 }
 
+impl IssueStatusCounts {
+    /// Add `n` issues stored with `status`. An unparseable value (only a
+    /// hand-edited row can hold one) still counts toward the total.
+    pub fn add(&mut self, status: &str, n: i64) {
+        if let Ok(status) = status.parse() {
+            *self.slot(status) = n;
+        }
+        self.total += n;
+    }
+
+    pub fn get(&self, status: Status) -> i64 {
+        match status {
+            Status::Backlog => self.backlog,
+            Status::Todo => self.todo,
+            Status::Active => self.active,
+            Status::Done => self.done,
+            Status::Cancelled => self.cancelled,
+        }
+    }
+
+    fn slot(&mut self, status: Status) -> &mut i64 {
+        match status {
+            Status::Backlog => &mut self.backlog,
+            Status::Todo => &mut self.todo,
+            Status::Active => &mut self.active,
+            Status::Done => &mut self.done,
+            Status::Cancelled => &mut self.cancelled,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
     pub id: i64,

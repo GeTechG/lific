@@ -1101,6 +1101,7 @@ fn canonical_project_identifier(
 
 mod export_pages;
 mod names;
+mod roles;
 
 fn resolve_module(conn: &rusqlite::Connection, project_id: i64, name: &str) -> Result<i64, String> {
     names::module_id(conn, project_id, name).map_err(|e| e.to_string())
@@ -3617,7 +3618,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "List resources by type: project, module, label, folder, page, issue, or plan. Most types need a project identifier."
+        description = "List resources by type: project, module, label, folder, page, issue, or plan. Most types need a project identifier. Project rows show members by role, your role and issue counts per status; members=[\"me\"] keeps only your projects."
     )]
     fn list_resources(&self, Parameters(input): Parameters<ListResourcesInput>) -> String {
         self.list_resources_inner(input)
@@ -3679,14 +3680,54 @@ impl LificMcp {
                 if let Some(nudge) = self.no_projects_nudge() {
                     return Ok(nudge);
                 }
+                let statuses =
+                    roles::parse_list(input.statuses.as_deref(), &roles::COUNT_ORDER, "status")?
+                        .unwrap_or_else(|| roles::COUNT_ORDER.to_vec());
+                let show_members =
+                    roles::parse_list(input.show_members.as_deref(), &roles::ROSTER_ORDER, "role")?;
+                // `project` narrows the listing to one project, behind the
+                // same Viewer gate as every project-scoped read.
+                let only = match input.project.as_deref() {
+                    Some(project) => {
+                        let pid = resolve_project(&*self.read_conn()?, project)?;
+                        require_role_mcp(&self.db, pid, models::Role::Viewer)?;
+                        Some(pid)
+                    }
+                    None => None,
+                };
                 let visible = visible_project_ids_mcp(&self.db)?;
-                let (ps, stats) = self.read(|conn| {
+                let identity = super::current_identity(&self.db).map(|identity| identity.user);
+                let (ps, stats, rosters, caller, counts) = self.read(|conn| {
                     Ok((
                         queries::list_projects(conn)?,
                         queries::project_agent_stats(conn)?,
+                        queries::members::rosters_by_project(conn)?,
+                        // The gates' view of the caller: a bot answers as its
+                        // owner, so "you" matches what the caller may see.
+                        crate::authz::effective_user(conn, &identity),
+                        queries::count_issues_by_status_all(conn)?,
                     ))
                 })?;
                 let mut ps = filter_visible(ps, &visible, |p| Some(p.id));
+                if let Some(pid) = only {
+                    ps.retain(|project| project.id == pid);
+                }
+                let filter = self.read(|conn| {
+                    Ok(roles::MemberFilter::parse(
+                        conn,
+                        input.members.as_deref(),
+                        input.roles.as_deref(),
+                        caller.as_ref(),
+                    ))
+                })??;
+                if let Some(filter) = &filter {
+                    ps.retain(|project| {
+                        filter.matches(rosters.get(&project.id).map_or(&[], Vec::as_slice))
+                    });
+                    if ps.is_empty() {
+                        return Ok(filter.no_projects());
+                    }
+                }
                 ps.sort_by(|left, right| cmp_projects_by_activity(left, right, &stats));
                 let now = Utc::now();
                 Ok(render_response(|output| {
@@ -3704,6 +3745,23 @@ impl LificMcp {
                         stats.get(&project.id).map_or(Ok(()), |stats| {
                             write!(output, "{}", ProjectAgentStats { stats, now })
                         })?;
+                        write!(
+                            output,
+                            "{}",
+                            roles::ProjectRoster {
+                                members: rosters.get(&project.id).map_or(&[], Vec::as_slice),
+                                caller: caller.as_ref(),
+                                show: show_members.as_deref(),
+                            }
+                        )?;
+                        write!(
+                            output,
+                            "{}",
+                            roles::ProjectStatusCounts {
+                                counts: counts.get(&project.id),
+                                statuses: &statuses,
+                            }
+                        )?;
                         output.write_char('\n')
                     })
                 }))
@@ -5470,6 +5528,9 @@ mod input_hardening_tests;
 
 #[cfg(test)]
 mod relation_visibility_tests;
+
+#[cfg(test)]
+mod roles_tests;
 
 #[cfg(test)]
 mod tests_verification;
@@ -7714,12 +7775,13 @@ mod tests {
             recent.starts_with("- REC | Recent (1 workable, 1 active plan, last activity "),
             "got: {recent}"
         );
-        assert!(recent.ends_with(" ago)"), "got: {recent}");
+        assert!(recent.contains(" ago) | "), "got: {recent}");
+        // GitHub #87 appends the roster and status counts after the stats.
         assert_eq!(
             result
                 .lines()
                 .find(|line| line.starts_with("- EMP | Empty")),
-            Some("- EMP | Empty"),
+            Some("- EMP | Empty | no members | you: admin | no issues"),
             "fresh empty project must have no stats suffix: {result}"
         );
         assert!(
