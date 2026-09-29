@@ -53,8 +53,18 @@ tokio::task_local! {
 
 /// Most tools use synchronous SQLite calls on Tokio workers. Bound concurrent
 /// tools to leave a worker available for HTTP and websocket tasks, while
-/// retaining the four-tool cap on larger runtimes.
-static MCP_TOOL_PERMITS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+/// retaining the four-tool cap on larger runtimes. Twelve permits divide
+/// evenly by every allowed concurrency (1 to 4), so each tool takes
+/// `12 / allowed` permits and exactly `allowed` tools run at once.
+const MCP_TOOL_PERMIT_TOTAL: usize = 12;
+static MCP_TOOL_PERMITS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MCP_TOOL_PERMIT_TOTAL);
+
+/// Permits one tool call takes on a runtime with `workers` worker threads.
+fn mcp_tool_permits_per_call(workers: usize) -> u32 {
+    let allowed_concurrency = workers.saturating_sub(1).clamp(1, 4);
+    (MCP_TOOL_PERMIT_TOTAL / allowed_concurrency) as u32
+}
 
 /// rmcp copies HTTP request parts into each tool call's extensions before it
 /// spawns the handler task. The Axum route supplies this value there.
@@ -664,10 +674,8 @@ impl ServerHandler for LificMcp {
     + '_ {
         async move {
             let workers = tokio::runtime::Handle::current().metrics().num_workers();
-            let allowed_concurrency = workers.saturating_sub(1).clamp(1, 4);
-            let permits_per_tool = 4_usize.div_ceil(allowed_concurrency) as u32;
             let _permit = MCP_TOOL_PERMITS
-                .acquire_many(permits_per_tool)
+                .acquire_many(mcp_tool_permits_per_call(workers))
                 .await
                 .expect("MCP tool semaphore is never closed");
             let http_context = context
@@ -1438,6 +1446,19 @@ mod tests {
             "no-token stdio session must resolve to the first admin"
         );
         assert_eq!(identity.transport, crate::actor::Transport::Mcp);
+    }
+
+    #[test]
+    fn tool_permits_allow_one_fewer_call_than_workers_up_to_four() {
+        for (workers, allowed) in [(1, 1), (2, 1), (3, 2), (4, 3), (5, 4), (32, 4)] {
+            let per_call = mcp_tool_permits_per_call(workers) as usize;
+            assert_eq!(
+                MCP_TOOL_PERMIT_TOTAL / per_call,
+                allowed,
+                "{workers} workers should allow {allowed} concurrent tools"
+            );
+            assert_eq!(MCP_TOOL_PERMIT_TOTAL % per_call, 0);
+        }
     }
 
     /// The HTTP transport is already wrapped in `with_request_context` by
