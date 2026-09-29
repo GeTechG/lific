@@ -338,29 +338,28 @@ pub(crate) fn build_app_with_store(
     let authed_routes = authed_routes
         .route(
             "/mcp",
-            any(move |request: Request<Body>| async move {
-                // Extract the authenticated user (set by auth middleware)
-                // and store it for MCP tools to read. Serialized to prevent
-                // concurrent requests from overwriting each other's identity.
-                let auth_user = request
-                    .extensions()
-                    .get::<Option<db::models::AuthUser>>()
-                    .cloned()
-                    .flatten();
-
-                let issue_links = links::IssueLinkContext::for_http_request(
+            any(move |mut request: Request<Body>| async move {
+                // rmcp copies HTTP request extensions into the spawned tool
+                // task's RequestContext. Keep identity bound to that request.
+                let issue_links = mcp_issue_link_context(
+                    &request,
                     mcp_public_url.as_deref(),
-                    request
-                        .headers()
-                        .get(header::HOST)
-                        .and_then(|value| value.to_str().ok()),
                     &mcp_allowed_hosts_for_links,
                 );
 
-                mcp::with_request_context(auth_user, issue_links, || async {
-                    mcp_service.handle(request).await.into_response()
-                })
-                .await
+                if let Some(issue_links) = issue_links {
+                    let auth_user = request
+                        .extensions_mut()
+                        .remove::<Option<db::models::AuthUser>>()
+                        .unwrap_or(None);
+                    request
+                        .extensions_mut()
+                        .insert(Arc::new(mcp::HttpRequestData {
+                            user: auth_user,
+                            issue_links,
+                        }));
+                }
+                mcp_service.handle(request).await.into_response()
             }),
         )
         .layer(axum::Extension(realtime.clone()))
@@ -737,6 +736,21 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     }
 }
 
+fn mcp_issue_link_context(
+    request: &Request<Body>,
+    public_url: Option<&str>,
+    allowed_hosts: &[String],
+) -> Option<links::IssueLinkContext> {
+    links::IssueLinkContext::for_http_request(
+        public_url,
+        request
+            .headers()
+            .get(header::HOST)
+            .and_then(|value| value.to_str().ok()),
+        allowed_hosts,
+    )
+}
+
 /// Build the authless MCP router mounted at `/mcp/<token>`.
 ///
 /// This endpoint deliberately bypasses the OAuth/API-key auth middleware: the
@@ -768,19 +782,17 @@ fn build_authless_mcp_router(
     ));
     Router::new().route(
         &format!("/mcp/{token}"),
-        any(move |request: Request<Body>| async move {
-            let issue_links = links::IssueLinkContext::for_http_request(
-                public_url.as_deref(),
+        any(move |mut request: Request<Body>| async move {
+            let issue_links =
+                mcp_issue_link_context(&request, public_url.as_deref(), &allowed_hosts_for_links);
+            if let Some(issue_links) = issue_links {
                 request
-                    .headers()
-                    .get(header::HOST)
-                    .and_then(|value| value.to_str().ok()),
-                &allowed_hosts_for_links,
-            );
-            mcp::with_request_context(user, issue_links, || async {
-                service.handle(request).await.into_response()
-            })
-            .await
+                    .extensions_mut()
+                    .insert(Arc::new(mcp::HttpRequestData { user, issue_links }));
+            } else {
+                request.extensions_mut().insert(user);
+            }
+            service.handle(request).await.into_response()
         }),
     )
 }
@@ -1851,6 +1863,177 @@ mod authless_mcp_tests {
                 !text.contains(["BETA project", "ALPHA project"][index]),
                 "{text}"
             );
+        }
+    }
+
+    /// Two users, each the lead of one project, in `pool`.
+    fn seed_two_project_leads(pool: &db::DbPool) -> [db::models::AuthUser; 2] {
+        let users = {
+            let conn = pool.write().unwrap();
+            db::queries::settings::ensure(&conn, false).unwrap();
+            db::queries::users::create_passwordless_admin(&conn, "Operator").unwrap();
+            ["alice", "bob"].map(|name| {
+                let user = db::queries::users::create_user(
+                    &conn,
+                    &db::models::CreateUser {
+                        username: name.into(),
+                        email: format!("{name}@example.test"),
+                        password: "testpassword1".into(),
+                        display_name: None,
+                        is_admin: false,
+                        is_bot: false,
+                    },
+                )
+                .unwrap();
+                db::models::AuthUser {
+                    id: user.id,
+                    username: user.username,
+                    display_name: user.display_name,
+                    is_admin: false,
+                }
+            })
+        };
+        {
+            let conn = pool.write().unwrap();
+            for (user, identifier) in users.iter().zip(["ALICE", "BOB"]) {
+                db::queries::create_project(
+                    &conn,
+                    &db::models::CreateProject {
+                        name: format!("{identifier} project"),
+                        identifier: identifier.into(),
+                        lead_user_id: Some(user.id),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
+        }
+        users
+    }
+
+    fn user_mcp_routers(pool: &db::DbPool, users: &[db::models::AuthUser; 2]) -> [Router; 2] {
+        users.clone().map(|user| {
+            build_authless_mcp_router(
+                pool.clone(),
+                "test-token",
+                Some(user),
+                vec!["localhost".into()],
+                None,
+                realtime::RealtimeHub::new(),
+            )
+        })
+    }
+
+    /// Call one MCP tool over HTTP and return its first text block.
+    async fn call_mcp_tool(router: Router, name: &str, arguments: serde_json::Value) -> String {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp/test-token")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-06-18")
+            .body(Body::from(
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(value["result"]["isError"], true, "{value}");
+        value["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_http_mcp_calls_keep_their_own_user() {
+        let pool = db::open_memory().unwrap();
+        let users = seed_two_project_leads(&pool);
+        let routers = user_mcp_routers(&pool, &users);
+        let list = serde_json::json!({"resource_type": "project"});
+        let calls: Vec<_> = (0..16)
+            .map(|index| {
+                let router = routers[index % 2].clone();
+                let list = list.clone();
+                tokio::spawn(async move {
+                    (
+                        index % 2,
+                        call_mcp_tool(router, "list_resources", list).await,
+                    )
+                })
+            })
+            .collect();
+        for call in calls {
+            let (caller, text) = call.await.unwrap();
+            let (own, other) = [("ALICE", "BOB"), ("BOB", "ALICE")][caller];
+            assert!(text.contains(&format!("{own} project")), "{text}");
+            assert!(!text.contains(&format!("{other} project")), "{text}");
+        }
+    }
+
+    /// LIF-155 over the real transport: rmcp runs each tool on its own
+    /// spawned task, so the audit actor must come from that request's
+    /// extensions. Overlapping writes from two users must each attribute to
+    /// their own caller. A file database, because shared-cache in-memory
+    /// SQLite reports table locks under genuinely concurrent writers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_http_mcp_writes_keep_their_own_audit_actor() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open(&dir.path().join("lific.db")).unwrap();
+        let users = seed_two_project_leads(&pool);
+        let routers = user_mcp_routers(&pool, &users);
+        let calls: Vec<_> = (0..20)
+            .map(|index| {
+                let router = routers[index % 2].clone();
+                let project = ["ALICE", "BOB"][index % 2];
+                tokio::spawn(async move {
+                    call_mcp_tool(
+                        router,
+                        "create_issue",
+                        serde_json::json!({"project": project, "title": format!("write {index}")}),
+                    )
+                    .await
+                })
+            })
+            .collect();
+        for call in calls {
+            let text = call.await.unwrap();
+            assert!(text.starts_with("Created"), "{text}");
+        }
+
+        let conn = pool.read().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT p.identifier, a.actor_user_id, a.transport
+                   FROM audit_log a JOIN projects p ON p.id = a.project_id
+                  WHERE a.entity_type = 'issue' AND a.action = 'create'",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<i64>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 20, "{rows:?}");
+        for (project, actor, transport) in rows {
+            let lead = if project == "ALICE" {
+                &users[0]
+            } else {
+                &users[1]
+            };
+            assert_eq!(
+                actor,
+                Some(lead.id),
+                "{project} issue attributed to {actor:?}"
+            );
+            assert_eq!(transport, "mcp");
         }
     }
 
