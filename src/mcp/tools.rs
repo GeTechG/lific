@@ -729,6 +729,14 @@ impl Display for ProjectAgentStats<'_> {
     }
 }
 
+/// Which issues a `list_issues` call reads: one project, or a `members`
+/// filter's project set with the roles header that introduces it.
+struct IssueScope {
+    project_id: Option<i64>,
+    project_ids: Option<Vec<i64>>,
+    header: Option<String>,
+}
+
 fn cmp_projects_by_activity(
     left: &models::Project,
     right: &models::Project,
@@ -2010,7 +2018,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "List issues for a project. workable=true gives issues with no blockers, blocked=true for issues with at least one blocker."
+        description = "List issues for a project, or with members=[\"me\"] across the projects where you hold a role (active and todo, like the web home page); roles=[\"lead\",\"maintainer\"] keeps the projects you answer for. workable=true gives issues with no blockers, blocked=true for issues with at least one blocker."
     )]
     fn list_issues(&self, Parameters(input): Parameters<ListIssuesInput>) -> String {
         self.list_issues_inner(input).unwrap_or_else(error_response)
@@ -2020,14 +2028,73 @@ impl LificMcp {
         if let Some(nudge) = self.no_projects_nudge() {
             return Ok(nudge);
         }
-        let conn = self.read_conn()?;
-        let pid = resolve_project(&conn, self.project_or_bound(input.project.as_deref())?)?;
-        require_role_mcp(&self.db, pid, models::Role::Viewer)?;
-        let module_id = match &input.module {
-            Some(name) => Some(resolve_module(&conn, pid, name)?),
-            None => None,
+        if input.status.is_some() && input.statuses.is_some() {
+            return Err("pass status or statuses, not both".into());
+        }
+        let statuses = roles::parse_list(input.statuses.as_deref(), &roles::COUNT_ORDER, "status")?;
+        if statuses.as_ref().is_some_and(Vec::is_empty) {
+            return Err("statuses must name at least one status, or all".into());
+        }
+        let identity = super::current_identity(&self.db).map(|identity| identity.user);
+        let filter = self.read(|conn| {
+            // The gates' view of the caller: a bot's "me" is its owner.
+            let caller = crate::authz::effective_user(conn, &identity);
+            Ok(roles::MemberFilter::parse(
+                conn,
+                input.members.as_deref(),
+                input.roles.as_deref(),
+                caller.as_ref(),
+            ))
+        })??;
+        // `sort_order` is a per-project rank, so a bare `order` would sort a
+        // cross-project list by nothing meaningful.
+        if filter.is_some() && input.order.is_some() && input.order_by.is_none() {
+            return Err(
+                "order needs order_by when members is used; without both, issues sort by priority, status, then most recently updated"
+                    .into(),
+            );
+        }
+        let scope = match &filter {
+            None => {
+                let conn = self.read_conn()?;
+                let pid = resolve_project(&conn, self.project_or_bound(input.project.as_deref())?)?;
+                require_role_mcp(&self.db, pid, models::Role::Viewer)?;
+                IssueScope {
+                    project_id: Some(pid),
+                    project_ids: None,
+                    header: None,
+                }
+            }
+            Some(filter) => match self.member_issue_scope(filter, &input)? {
+                Ok(scope) => scope,
+                Err(empty) => return Ok(empty),
+            },
         };
-        drop(conn);
+        let IssueScope {
+            project_id: pid,
+            project_ids,
+            header,
+        } = scope;
+        let module_id = match (&input.module, pid) {
+            (Some(name), Some(pid)) => Some(resolve_module(&*self.read_conn()?, pid, name)?),
+            (Some(_), None) => return Err("module requires project".into()),
+            (None, _) => None,
+        };
+        if input.label.is_some() && pid.is_none() {
+            return Err("label requires project".into());
+        }
+        // Cross-project listings default to the web home page's "My active
+        // issues": active and todo. Backlog and closed work come on request.
+        let statuses = statuses.or_else(|| {
+            (filter.is_some() && input.status.is_none())
+                .then(|| vec![models::Status::Active, models::Status::Todo])
+        });
+        let exclude_statuses = statuses.map_or_else(Vec::new, |statuses| {
+            roles::COUNT_ORDER
+                .into_iter()
+                .filter(|status| !statuses.contains(status))
+                .collect()
+        });
         // The query's own default (50) is this tool's documented default, so
         // the shared clamp needs no override; it runs here as well to give the
         // paging hint below the numbers the query paged by.
@@ -2036,17 +2103,19 @@ impl LificMcp {
             queries::list_issues_page(
                 conn,
                 &models::ListIssuesQuery {
-                    project_id: Some(pid),
+                    project_id: pid,
+                    project_ids,
+                    exclude_statuses,
+                    triage_order: filter.is_some(),
                     status: models::Status::parse_opt(input.status.as_deref())
                         .map_err(crate::error::LificError::BadRequest)?,
                     priority: models::Priority::parse_opt(input.priority.as_deref())
                         .map_err(crate::error::LificError::BadRequest)?,
                     module_id,
-                    label: input
-                        .label
-                        .as_deref()
-                        .map(|name| names::stored_label_name(conn, pid, name))
-                        .transpose()?,
+                    label: match (input.label.as_deref(), pid) {
+                        (Some(name), Some(pid)) => Some(names::stored_label_name(conn, pid, name)?),
+                        _ => None,
+                    },
                     workable: input.workable,
                     blocked: input.blocked,
                     created_since: input.created_since.clone(),
@@ -2057,29 +2126,48 @@ impl LificMcp {
                     order: input.order.clone(),
                     limit: Some(limit),
                     offset: Some(offset),
-                    ..Default::default()
                 },
             )
         })?;
         if issues.items.is_empty() {
-            return Ok("No issues found.".into());
+            // Keep the roles header: "on three projects, nothing open" is an
+            // answer, where a bare "No issues found." is not.
+            return Ok(match &header {
+                Some(header) => format!(
+                    "{header}
+No issues found."
+                ),
+                None => "No issues found.".into(),
+            });
         }
         let has_more = issues.has_more;
         let mut issues = issues.items;
         self.retain_visible_relations(&mut issues)?;
         // Resolve module ids to names once for the whole page, so each row can
         // carry its module without a per-issue lookup (GitHub #48).
-        let module_names: std::collections::HashMap<i64, String> =
-            if issues.iter().any(|issue| issue.module_id.is_some()) {
-                self.read(|conn| queries::list_modules(conn, pid))?
-                    .into_iter()
-                    .map(|module| (module.id, module.name))
-                    .collect()
-            } else {
-                std::collections::HashMap::new()
-            };
+        // One module lookup per project on the page (one project unless
+        // `members` spans several), and none when no row carries a module.
+        let mut module_projects: Vec<i64> = issues
+            .iter()
+            .filter(|issue| issue.module_id.is_some())
+            .map(|issue| issue.project_id)
+            .collect();
+        module_projects.sort_unstable();
+        module_projects.dedup();
+        let module_names: std::collections::HashMap<i64, String> = self.read(|conn| {
+            let mut names = std::collections::HashMap::new();
+            for project_id in module_projects {
+                for module in queries::list_modules(conn, project_id)? {
+                    names.insert(module.id, module.name);
+                }
+            }
+            Ok(names)
+        })?;
         let context = current_issue_link_context();
         Ok(render_response(|output| {
+            if let Some(header) = &header {
+                writeln!(output, "{header}")?;
+            }
             writeln!(output, "{} issues:", issues.len())?;
             issues.iter().try_for_each(|issue| {
                 write!(
@@ -2100,6 +2188,64 @@ impl LificMcp {
                 writeln!(output)
             })?;
             append_pagination_hint(output, has_more, offset + limit)
+        }))
+    }
+
+    /// The projects a `members`-filtered `list_issues` spans: the caller's
+    /// visible projects where a filtered user holds a filtered role, or just
+    /// `project` when one is named. `Err` carries the reply for an empty scope.
+    fn member_issue_scope(
+        &self,
+        filter: &roles::MemberFilter,
+        input: &ListIssuesInput,
+    ) -> Result<Result<IssueScope, String>, String> {
+        let only = match input.project.as_deref() {
+            Some(project) => {
+                let pid = resolve_project(&*self.read_conn()?, project)?;
+                require_role_mcp(&self.db, pid, models::Role::Viewer)?;
+                Some(pid)
+            }
+            None => None,
+        };
+        let visible = visible_project_ids_mcp(&self.db)?;
+        let (projects, rosters) = self.read(|conn| {
+            Ok((
+                queries::list_projects(conn)?,
+                queries::members::rosters_by_project(conn)?,
+            ))
+        })?;
+        let roster = |pid: i64| rosters.get(&pid).map_or(&[][..], Vec::as_slice);
+        let mut projects = filter_visible(projects, &visible, |p| Some(p.id));
+        if let Some(pid) = only {
+            projects.retain(|project| project.id == pid);
+            if let Some(project) = projects.first()
+                && !filter.matches(roster(pid))
+            {
+                return Ok(Err(format!(
+                    "No issues: {} no role in {}.",
+                    filter.subject(),
+                    project.identifier
+                )));
+            }
+        }
+        projects.retain(|project| filter.matches(roster(project.id)));
+        if projects.is_empty() {
+            return Ok(Err(filter.no_projects()));
+        }
+        projects.sort_by(|left, right| left.identifier.cmp(&right.identifier));
+        let listed: Vec<(&str, &[models::MemberWithUser])> = projects
+            .iter()
+            .map(|project| (project.identifier.as_str(), roster(project.id)))
+            .collect();
+        let header = roles::RolesHeader {
+            filter,
+            projects: &listed,
+        }
+        .to_string();
+        Ok(Ok(IssueScope {
+            project_id: only,
+            project_ids: Some(projects.iter().map(|project| project.id).collect()),
+            header: Some(header),
         }))
     }
 

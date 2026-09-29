@@ -483,6 +483,18 @@ pub struct ListIssuesQuery {
     /// cannot crowd eligible ones off a page. Internal: not a REST parameter.
     #[serde(skip)]
     pub exclude_statuses: Vec<Status>,
+    /// Only issues in these projects, applied in SQL before paging so a
+    /// cross-project page is never short (GitHub #87). `Some(vec![])` matches
+    /// nothing. Internal: not a REST parameter.
+    #[serde(skip)]
+    pub project_ids: Option<Vec<i64>>,
+    /// With no `order_by`/`order`, sort the way the web home page's "My
+    /// active issues" does: active before todo before backlog, then priority,
+    /// then most recently updated. `sort_order` is a per-project rank, so it
+    /// means nothing across projects (GitHub #87). Internal: not a REST
+    /// parameter.
+    #[serde(skip)]
+    pub triage_order: bool,
 }
 
 /// Per-status issue counts for a project (LIF-161). `total` is the sum of

@@ -397,3 +397,239 @@ fn list_resources_advertises_the_new_filters_as_optional_string_lists() {
         &["members", "roles", "statuses", "show_members"],
     );
 }
+
+// ── list_issues across a member's projects ────────────────────────────
+
+/// Insert an issue straight into `project_id`; `age` backdates `updated_at`
+/// on insert (the `issues_updated` trigger restamps any later UPDATE).
+fn seed_issue_as(
+    m: &LificMcp,
+    project_id: i64,
+    title: &str,
+    status: &str,
+    priority: &str,
+    age: &str,
+) {
+    m.write(|conn| {
+        conn.execute(
+            "INSERT INTO issues (project_id, sequence, title, status, priority, updated_at)
+             VALUES (?1, (SELECT COALESCE(MAX(sequence), 0) + 1 FROM issues WHERE project_id = ?1),
+                     ?2, ?3, ?4, datetime('now', ?5))",
+            rusqlite::params![project_id, title, status, priority, age],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// MEM (lead: `lead`, maintainer: `maintainer`) and OTH (lead: `admin`,
+/// viewer: `lead`), with open and closed work in both.
+fn triage_fixture() -> (
+    LificMcp,
+    models::AuthUser,
+    models::AuthUser,
+    i64,
+    McpTestGuard,
+) {
+    let (m, admin, lead, maintainer, _viewer, _non_member, mem, guard) = setup_membership_mcp();
+    let oth = seed_other_project(&m, admin.id);
+    m.write(|conn| queries::members::upsert_member(conn, oth, lead.id, models::Role::Viewer))
+        .unwrap();
+    seed_issue_as(&m, mem, "Low todo", "todo", "low", "+0 days"); // MEM-1
+    seed_issue_as(&m, mem, "Plain active", "active", "none", "+0 days"); // MEM-2
+    seed_issue_as(&m, mem, "Finished", "done", "high", "+0 days"); // MEM-3
+    seed_issue_as(&m, oth, "Urgent todo", "todo", "urgent", "+0 days"); // OTH-1
+    seed_issue_as(&m, oth, "Dropped", "cancelled", "urgent", "+0 days"); // OTH-2
+    (m, lead, maintainer, mem, guard)
+}
+
+fn issues(m: &LificMcp, user: &models::AuthUser, args: Value) -> String {
+    as_user(Some(user), || m.list_issues(Parameters(tool_input(args))))
+}
+
+/// Issue identifiers in the order a listing prints them.
+fn listed(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter_map(|line| line.strip_prefix("- ")?.split(' ').next())
+        .collect()
+}
+
+#[test]
+fn my_issues_match_the_home_page_active_then_todo_then_priority() {
+    let (m, lead, ..) = triage_fixture();
+
+    let out = issues(&m, &lead, json!({"members": ["me"]}));
+
+    assert!(
+        out.starts_with("Your roles: MEM lead · OTH viewer\n3 issues:\n"),
+        "got: {out}"
+    );
+    assert_eq!(listed(&out), ["MEM-2", "OTH-1", "MEM-1"], "got: {out}");
+}
+
+#[test]
+fn triage_breaks_ties_by_recency_and_backlog_comes_on_request() {
+    let (m, lead, _maintainer, mem, _guard) = triage_fixture();
+    seed_issue_as(&m, mem, "Older todo", "todo", "none", "-2 days"); // MEM-4
+    seed_issue_as(&m, mem, "Newer todo", "todo", "none", "+0 days"); // MEM-5
+    seed_issue_as(&m, mem, "Plain backlog", "backlog", "none", "+0 days"); // MEM-6
+
+    let out = issues(
+        &m,
+        &lead,
+        json!({"members": ["me"], "priority": "none", "statuses": ["active", "todo", "backlog"]}),
+    );
+
+    assert_eq!(
+        listed(&out),
+        ["MEM-2", "MEM-5", "MEM-4", "MEM-6"],
+        "got: {out}"
+    );
+}
+
+#[test]
+fn statuses_brings_closed_work_back_and_explicit_order_by_wins() {
+    let (m, lead, ..) = triage_fixture();
+
+    // Lowest priority first: an order triage would never produce.
+    let all = issues(
+        &m,
+        &lead,
+        json!({"members": ["me"], "statuses": ["all"], "order_by": "priority", "order": "desc"}),
+    );
+    assert_eq!(
+        listed(&all),
+        ["MEM-2", "MEM-1", "MEM-3", "OTH-2", "OTH-1"],
+        "got: {all}"
+    );
+
+    let closed = issues(
+        &m,
+        &lead,
+        json!({"members": ["me"], "statuses": ["done", "Cancelled"]}),
+    );
+    assert_eq!(listed(&closed), ["OTH-2", "MEM-3"], "got: {closed}");
+
+    let one_project = issues(
+        &m,
+        &lead,
+        json!({"project": "MEM", "statuses": ["todo", "done"]}),
+    );
+    assert!(
+        one_project.starts_with("2 issues:"),
+        "no header without members: {one_project}"
+    );
+    assert_eq!(listed(&one_project), ["MEM-1", "MEM-3"]);
+}
+
+#[test]
+fn roles_alone_lists_my_issues_where_i_hold_those_roles() {
+    let (m, lead, ..) = triage_fixture();
+
+    let out = issues(&m, &lead, json!({"roles": ["lead"]}));
+
+    assert!(out.starts_with("Your roles: MEM lead\n"), "got: {out}");
+    assert_eq!(listed(&out), ["MEM-2", "MEM-1"], "got: {out}");
+}
+
+#[test]
+fn another_members_issues_stay_limited_to_projects_i_can_see() {
+    let (m, _lead, maintainer, ..) = triage_fixture();
+
+    let out = issues(&m, &maintainer, json!({"members": ["@admin", "lead"]}));
+
+    assert!(
+        out.starts_with("Roles: MEM @lead lead\n"),
+        "OTH is hidden from a MEM maintainer: {out}"
+    );
+    assert_eq!(listed(&out), ["MEM-2", "MEM-1"], "got: {out}");
+}
+
+#[test]
+fn members_with_project_filters_that_project() {
+    let (m, lead, maintainer, ..) = triage_fixture();
+
+    let in_mem = issues(
+        &m,
+        &lead,
+        json!({"project": "MEM", "members": ["maintainer"]}),
+    );
+    assert_eq!(listed(&in_mem), ["MEM-2", "MEM-1"], "got: {in_mem}");
+
+    let no_role = issues(
+        &m,
+        &lead,
+        json!({"project": "OTH", "members": ["maintainer"]}),
+    );
+    assert_eq!(no_role, "No issues: @maintainer has no role in OTH.");
+
+    let hidden = issues(
+        &m,
+        &maintainer,
+        json!({"project": "OTH", "members": ["me"]}),
+    );
+    assert!(hidden.starts_with("Error: Forbidden"), "got: {hidden}");
+}
+
+#[test]
+fn an_empty_member_listing_still_names_the_roles() {
+    let (m, lead, ..) = triage_fixture();
+
+    let out = issues(&m, &lead, json!({"members": ["me"], "priority": "medium"}));
+
+    assert_eq!(out, "Your roles: MEM lead · OTH viewer\nNo issues found.");
+}
+
+#[test]
+fn list_issues_rejects_ambiguous_filters_and_keeps_project_required_otherwise() {
+    let (m, lead, ..) = triage_fixture();
+    let call = |args: Value| issues(&m, &lead, args);
+
+    let cases = [
+        (
+            json!({"project": "MEM", "status": "todo", "statuses": ["done"]}),
+            "pass status or statuses, not both",
+        ),
+        (
+            json!({"project": "MEM", "statuses": []}),
+            "statuses must name at least one status",
+        ),
+        (
+            json!({"members": ["me"], "module": "Core"}),
+            "module requires project",
+        ),
+        (
+            json!({"members": ["me"], "label": "bug"}),
+            "label requires project",
+        ),
+        (
+            json!({"members": ["me"], "order": "desc"}),
+            "order needs order_by",
+        ),
+        (json!({}), "project required"),
+    ];
+    for (args, error) in cases {
+        let out = call(args.clone());
+        assert!(out.starts_with("Error"), "{args}: {out}");
+        assert_has(&out, error);
+    }
+}
+
+#[test]
+fn list_issues_advertises_members_roles_and_statuses_as_optional_string_lists() {
+    let (m, ..) = setup_membership_mcp();
+    assert_optional_string_lists(&m, "list_issues", &["members", "roles", "statuses"]);
+}
+
+#[test]
+fn quoted_values_are_accepted_like_other_mcp_arguments() {
+    let (m, lead, ..) = triage_fixture();
+
+    let out = issues(
+        &m,
+        &lead,
+        json!({"members": ["'lead'"], "statuses": ["\"todo\""]}),
+    );
+
+    assert_eq!(listed(&out), ["OTH-1", "MEM-1"], "got: {out}");
+}

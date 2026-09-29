@@ -68,6 +68,18 @@ pub struct ListIssuesInput {
     pub limit: Option<i64>,
     #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Issues in the projects where any of these users has a role, across projects; project becomes optional. \"me\" is you; others by username (\"alice\" or \"@alice\"). Lists active and todo unless status/statuses asks, sorted like the web home page: status, priority, then most recently updated"
+    )]
+    pub members: Option<Vec<String>>,
+    #[schemars(
+        description = "Roles that count for members: lead, maintainer, viewer, or all (default all). Without members, means your own roles"
+    )]
+    pub roles: Option<Vec<String>>,
+    #[schemars(
+        description = "Several statuses at once: backlog, todo, active, done, cancelled, or all. Not together with status"
+    )]
+    pub statuses: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]

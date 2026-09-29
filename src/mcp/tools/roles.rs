@@ -27,6 +27,13 @@ pub(super) const COUNT_ORDER: [models::Status; 5] = [
 /// so a large team doesn't flood every project row.
 const ROSTER_NAME_CAP: usize = 5;
 
+/// A list value trimmed and stripped of one pair of wrapping quotes, as the
+/// other MCP arguments are (`'alice'` and `"todo"` arrive from some clients).
+fn unquoted(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    super::super::arguments::unquote_if_wrapped(trimmed).unwrap_or(trimmed)
+}
+
 /// Parse a list parameter whose values are one of `all` (lowercase wire
 /// names), or the keyword `"all"` for every one of them. Values are trimmed and
 /// matched case-insensitively; `None` (parameter omitted) stays `None`.
@@ -40,7 +47,7 @@ pub(super) fn parse_list<T: Copy + PartialEq + Display>(
     };
     let mut parsed = Vec::new();
     for raw in values {
-        let value = raw.trim().to_ascii_lowercase();
+        let value = unquoted(raw).to_ascii_lowercase();
         if value == "all" {
             return Ok(Some(all.to_vec()));
         }
@@ -48,7 +55,7 @@ pub(super) fn parse_list<T: Copy + PartialEq + Display>(
             let accepted = all.iter().map(ToString::to_string).collect::<Vec<_>>();
             return Err(format!(
                 "invalid {kind} '{}'. Use {}, or all.",
-                raw.trim(),
+                unquoted(raw),
                 accepted.join(", ")
             ));
         };
@@ -221,7 +228,7 @@ impl MemberFilter {
         }
         let mut users: Vec<(i64, String)> = Vec::new();
         for raw in members {
-            let name = raw.trim();
+            let name = unquoted(raw);
             let user = if name.eq_ignore_ascii_case("me") {
                 let caller = caller
                     .ok_or_else(|| String::from("members \"me\" needs a caller bound to a user"))?;
@@ -259,6 +266,19 @@ impl MemberFilter {
         )
     }
 
+    /// The filtered users' matching roles in `roster`, as `(label, role)`.
+    fn holdings<'a>(
+        &'a self,
+        roster: &'a [models::MemberWithUser],
+    ) -> impl Iterator<Item = (&'a str, models::Role)> + 'a {
+        roster.iter().filter_map(|member| {
+            let (_, label) = self.users.iter().find(|(id, _)| *id == member.user_id)?;
+            self.roles
+                .contains(&member.role)
+                .then_some((label.as_str(), member.role))
+        })
+    }
+
     /// `you`, `@bob`, or `you, @bob`, followed by the matching verb.
     pub(super) fn subject(&self) -> String {
         let names = self
@@ -272,5 +292,43 @@ impl MemberFilter {
             _ => "have",
         };
         format!("{names} {verb}")
+    }
+}
+
+/// The header of a cross-project issue listing: which role the filtered users
+/// hold in each listed project, so an agent can weigh the rows by it.
+/// `Your roles: APP lead · WEB viewer` when the filter is just the caller,
+/// `Roles: APP @bob lead, @carol viewer · WEB @bob maintainer` otherwise.
+pub(super) struct RolesHeader<'a> {
+    pub(super) filter: &'a MemberFilter,
+    /// `(project identifier, roster)` for each listed project, in order.
+    pub(super) projects: &'a [(&'a str, &'a [models::MemberWithUser])],
+}
+
+impl Display for RolesHeader<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let me_only = matches!(self.filter.users.as_slice(), [(_, label)] if label == "you");
+        formatter.write_str(if me_only { "Your roles: " } else { "Roles: " })?;
+        for (index, (identifier, roster)) in self.projects.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(" · ")?;
+            }
+            write!(formatter, "{identifier} ")?;
+            let holdings: Vec<(&str, models::Role)> = self.filter.holdings(roster).collect();
+            for (position, (label, role)) in holdings.iter().take(ROSTER_NAME_CAP).enumerate() {
+                if position > 0 {
+                    formatter.write_str(", ")?;
+                }
+                if me_only {
+                    write!(formatter, "{role}")?;
+                } else {
+                    write!(formatter, "{label} {role}")?;
+                }
+            }
+            if holdings.len() > ROSTER_NAME_CAP {
+                write!(formatter, " +{} more", holdings.len() - ROSTER_NAME_CAP)?;
+            }
+        }
+        Ok(())
     }
 }
