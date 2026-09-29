@@ -3911,7 +3911,15 @@ impl LificMcp {
     #[tool(
         description = "Create or update a project, module, label, or folder. Create project requires name and identifier; project update requires project=<IDENT>; module/label/folder create requires project and name; module/label/folder update requires project and current_name. Use delete for deletion."
     )]
-    fn manage_resource(&self, Parameters(input): Parameters<ManageResourceInput>) -> String {
+    fn manage_resource(&self, Parameters(mut input): Parameters<ManageResourceInput>) -> String {
+        input.resource_type = super::arguments::unquote(&input.resource_type);
+        input.action = super::arguments::unquote(&input.action);
+        super::arguments::unquote_option(&mut input.project);
+        super::arguments::unquote_option(&mut input.name);
+        super::arguments::unquote_option(&mut input.identifier);
+        super::arguments::unquote_option(&mut input.status);
+        super::arguments::unquote_option(&mut input.color);
+        super::arguments::unquote_option(&mut input.emoji);
         self.manage_resource_inner(input)
             .unwrap_or_else(error_response)
     }

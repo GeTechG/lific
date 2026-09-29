@@ -47,22 +47,34 @@ pub(super) fn decode_html_entities(name: &str) -> Option<String> {
     changed.then_some(decoded)
 }
 
-/// Run `lookup` on `name`, and on a miss once more on its decoded form. A
-/// second miss reports the name as the caller sent it.
+/// Try the original name, then the name without one outer quote pair, then
+/// their HTML-decoded forms in that order. Only a NotFound triggers a retry;
+/// a final miss reports the original name.
 fn with_decoded_retry<T>(
     name: &str,
     lookup: impl Fn(&str) -> Result<T, LificError>,
 ) -> Result<T, LificError> {
-    match lookup(name) {
-        Err(LificError::NotFound(message)) => match decode_html_entities(name) {
-            Some(decoded) => match lookup(&decoded) {
-                Err(LificError::NotFound(_)) => Err(LificError::NotFound(message)),
-                other => other,
-            },
-            None => Err(LificError::NotFound(message)),
-        },
-        other => other,
+    let original_message = match lookup(name) {
+        Err(LificError::NotFound(message)) => message,
+        other => return other,
+    };
+    let unquoted = crate::mcp::arguments::unquote_if_wrapped(name);
+    if let Some(unquoted) = unquoted {
+        match lookup(unquoted) {
+            Err(LificError::NotFound(_)) => {}
+            other => return other,
+        }
     }
+    for decoded in std::iter::once(name)
+        .chain(unquoted)
+        .filter_map(decode_html_entities)
+    {
+        match lookup(&decoded) {
+            Err(LificError::NotFound(_)) => {}
+            other => return other,
+        }
+    }
+    Err(LificError::NotFound(original_message))
 }
 
 pub(super) fn module_id(conn: &Connection, project_id: i64, name: &str) -> Result<i64, LificError> {
@@ -125,7 +137,96 @@ pub(super) fn stored_label_names(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_html_entities;
+    use super::{decode_html_entities, with_decoded_retry};
+    use crate::error::LificError;
+    use proptest::prelude::*;
+    use std::cell::RefCell;
+
+    proptest! {
+        #[test]
+        fn retry_stops_at_first_success_or_other_error(stem in "[a-z雪🙂]{0,12}") {
+            ['\'', '"'].into_iter()
+                .flat_map(|quote| (0..4).map(move |stop| (quote, stop)))
+                .flat_map(|(quote, stop)| [false, true].map(|fail| (quote, stop, fail)))
+                .try_for_each(|(quote, stop, fail)| {
+                    let candidates = [
+                        format!("{quote}{stem}&amp;y{quote}"),
+                        format!("{stem}&amp;y"),
+                        format!("{quote}{stem}&y{quote}"),
+                        format!("{stem}&y"),
+                    ];
+                    let attempts = RefCell::new(Vec::new());
+                    let result = with_decoded_retry(&candidates[0], |name| {
+                        attempts.borrow_mut().push(name.to_owned());
+                        if name != candidates[stop] {
+                            return Err(LificError::NotFound(name.to_owned()));
+                        }
+                        if fail {
+                            Err(LificError::Forbidden(name.to_owned()))
+                        } else {
+                            Ok(name.to_owned())
+                        }
+                    });
+                    prop_assert_eq!(attempts.into_inner(), candidates[..=stop].to_vec());
+                    match result {
+                        Ok(name) => {
+                            prop_assert!(!fail);
+                            prop_assert_eq!(&name, &candidates[stop]);
+                        }
+                        Err(LificError::Forbidden(name)) => {
+                            prop_assert!(fail);
+                            prop_assert_eq!(&name, &candidates[stop]);
+                        }
+                        other => prop_assert!(false, "unexpected result: {:?}", other),
+                    }
+                    Ok(())
+                })?;
+        }
+
+        #[test]
+        fn html_decoding_preserves_fragment_boundaries(
+            fragments in prop::collection::vec(prop::sample::select(vec![
+                ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                ("&quot;", "\""), ("&#39;", "'"), ("&#x27;", "'"),
+                ("&amp;lt;", "&lt;"), ("&amp;amp;", "&amp;"),
+                ("&", "&"), ("&nbsp;", "&nbsp;"), ("&AMP;", "&AMP;"),
+                ("plain", "plain"), ("雪🙂", "雪🙂"), ("", ""),
+            ]), 0..64)
+        ) {
+            let encoded: String = fragments.iter().map(|(encoded, _)| *encoded).collect();
+            let expected = fragments.iter().any(|(encoded, decoded)| encoded != decoded)
+                .then(|| fragments.iter().map(|(_, decoded)| *decoded).collect::<String>());
+            prop_assert_eq!(decode_html_entities(&encoded), expected);
+        }
+
+        #[test]
+        fn quoted_literal_names_precede_decoded_matches(stem in "[a-z]{0,12}") {
+            for quote in ['\'', '"'] {
+                let candidates = [
+                    format!("{quote}{stem}&amp;y{quote}"),
+                    format!("{stem}&amp;y"),
+                    format!("{quote}{stem}&y{quote}"),
+                    format!("{stem}&y"),
+                ];
+                // Exhaust every combination of existing names in precedence order.
+                for present in 0_u8..16 {
+                    let result = with_decoded_retry(&candidates[0], |name| {
+                        candidates.iter().enumerate()
+                            .find(|(index, candidate)| present & (1 << index) != 0 && candidate.as_str() == name)
+                            .map(|(index, _)| index)
+                            .ok_or_else(|| LificError::NotFound(name.into()))
+                    });
+                    match (0..4).find(|index| present & (1 << index) != 0) {
+                        Some(expected) => prop_assert_eq!(result.unwrap(), expected, "presence mask: {}", present),
+                        None => match result {
+                            Err(LificError::NotFound(name)) => prop_assert_eq!(name, candidates[0].as_str()),
+                            other => prop_assert!(false, "expected NotFound, got {:?}", other),
+                        },
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn decodes_the_common_entities_once() {

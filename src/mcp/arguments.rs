@@ -11,6 +11,28 @@
 
 use rmcp::ErrorData;
 
+/// Remove one matching pair of quote characters around an MCP string value.
+/// Some clients include the source-language string delimiters in the value
+/// itself instead of sending only the string contents.
+pub(crate) fn unquote(value: &str) -> String {
+    unquote_if_wrapped(value).unwrap_or(value).to_owned()
+}
+
+/// Return the value inside one matching pair of outer quote characters.
+pub(crate) fn unquote_if_wrapped(value: &str) -> Option<&str> {
+    let quote = match value.chars().next()? {
+        quote @ ('\'' | '"') => quote,
+        _ => return None,
+    };
+    value.strip_prefix(quote)?.strip_suffix(quote)
+}
+
+pub(crate) fn unquote_option(value: &mut Option<String>) {
+    if let Some(value) = value {
+        *value = unquote(value);
+    }
+}
+
 /// Rewrite an rmcp parameter-deserialization error that is about an unknown
 /// field. Every other error passes through unchanged.
 pub(crate) fn explain_unknown_parameter(
@@ -127,6 +149,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn valid() -> Vec<&'static str> {
         vec!["identifier", "include_comments"]
@@ -196,5 +219,22 @@ mod tests {
         .unwrap();
         assert!(!aliased.contains("oldString"), "{aliased}");
         assert!(aliased.contains("Did you mean `old_string`?"), "{aliased}");
+    }
+
+    proptest! {
+        #[test]
+        fn removes_exactly_one_matching_quote_pair(value in any::<String>(), quote in prop_oneof![Just('\''), Just('"')]) {
+            let wrapped = format!("{quote}{value}{quote}");
+            prop_assert_eq!(unquote(&wrapped), value);
+        }
+
+        #[test]
+        fn leaves_unquoted_and_mismatched_values_unchanged(value in any::<String>(), quotes in prop_oneof![Just(('\'', '"')), Just(('"', '\''))]) {
+            let plain = format!("prefix {value} suffix");
+            prop_assert_eq!(unquote(&plain), plain);
+
+            let mixed = format!("{}{value}{}", quotes.0, quotes.1);
+            prop_assert_eq!(unquote(&mixed), mixed);
+        }
     }
 }
