@@ -1866,9 +1866,8 @@ mod authless_mcp_tests {
         }
     }
 
-    #[tokio::test]
-    async fn concurrent_http_mcp_calls_keep_their_own_user() {
-        let pool = db::open_memory().unwrap();
+    /// Two users, each the lead of one project, in `pool`.
+    fn seed_two_project_leads(pool: &db::DbPool) -> [db::models::AuthUser; 2] {
         let users = {
             let conn = pool.write().unwrap();
             db::queries::settings::ensure(&conn, false).unwrap();
@@ -1909,8 +1908,11 @@ mod authless_mcp_tests {
                 .unwrap();
             }
         }
+        users
+    }
 
-        let routers = users.map(|user| {
+    fn user_mcp_routers(pool: &db::DbPool, users: &[db::models::AuthUser; 2]) -> [Router; 2] {
+        users.clone().map(|user| {
             build_authless_mcp_router(
                 pool.clone(),
                 "test-token",
@@ -1919,37 +1921,120 @@ mod authless_mcp_tests {
                 None,
                 realtime::RealtimeHub::new(),
             )
-        });
-        let call = |router: Router| async move {
-            let request = Request::builder()
-                .method(Method::POST)
-                .uri("/mcp/test-token")
-                .header("host", "localhost")
-                .header("content-type", "application/json")
-                .header("accept", "application/json, text/event-stream")
-                .header("MCP-Protocol-Version", "2025-06-18")
-                .body(Body::from(
-                    serde_json::json!({
-                        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                        "params": {"name": "list_resources", "arguments": {"resource_type": "project"}}
-                    })
-                    .to_string(),
-                ))
-                .unwrap();
-            let response = router.oneshot(request).await.unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let bytes = response.into_body().collect().await.unwrap().to_bytes();
-            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-            value["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        };
-        let (alice, bob) = tokio::join!(call(routers[0].clone()), call(routers[1].clone()));
-        assert!(alice.contains("ALICE project"), "{alice}");
-        assert!(!alice.contains("BOB project"), "{alice}");
-        assert!(bob.contains("BOB project"), "{bob}");
-        assert!(!bob.contains("ALICE project"), "{bob}");
+        })
+    }
+
+    /// Call one MCP tool over HTTP and return its first text block.
+    async fn call_mcp_tool(router: Router, name: &str, arguments: serde_json::Value) -> String {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/mcp/test-token")
+            .header("host", "localhost")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", "2025-06-18")
+            .body(Body::from(
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_ne!(value["result"]["isError"], true, "{value}");
+        value["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_http_mcp_calls_keep_their_own_user() {
+        let pool = db::open_memory().unwrap();
+        let users = seed_two_project_leads(&pool);
+        let routers = user_mcp_routers(&pool, &users);
+        let list = serde_json::json!({"resource_type": "project"});
+        let calls: Vec<_> = (0..16)
+            .map(|index| {
+                let router = routers[index % 2].clone();
+                let list = list.clone();
+                tokio::spawn(async move {
+                    (
+                        index % 2,
+                        call_mcp_tool(router, "list_resources", list).await,
+                    )
+                })
+            })
+            .collect();
+        for call in calls {
+            let (caller, text) = call.await.unwrap();
+            let (own, other) = [("ALICE", "BOB"), ("BOB", "ALICE")][caller];
+            assert!(text.contains(&format!("{own} project")), "{text}");
+            assert!(!text.contains(&format!("{other} project")), "{text}");
+        }
+    }
+
+    /// LIF-155 over the real transport: rmcp runs each tool on its own
+    /// spawned task, so the audit actor must come from that request's
+    /// extensions. Overlapping writes from two users must each attribute to
+    /// their own caller. A file database, because shared-cache in-memory
+    /// SQLite reports table locks under genuinely concurrent writers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_http_mcp_writes_keep_their_own_audit_actor() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = db::open(&dir.path().join("lific.db")).unwrap();
+        let users = seed_two_project_leads(&pool);
+        let routers = user_mcp_routers(&pool, &users);
+        let calls: Vec<_> = (0..20)
+            .map(|index| {
+                let router = routers[index % 2].clone();
+                let project = ["ALICE", "BOB"][index % 2];
+                tokio::spawn(async move {
+                    call_mcp_tool(
+                        router,
+                        "create_issue",
+                        serde_json::json!({"project": project, "title": format!("write {index}")}),
+                    )
+                    .await
+                })
+            })
+            .collect();
+        for call in calls {
+            let text = call.await.unwrap();
+            assert!(text.starts_with("Created"), "{text}");
+        }
+
+        let conn = pool.read().unwrap();
+        let mut statement = conn
+            .prepare(
+                "SELECT p.identifier, a.actor_user_id, a.transport
+                   FROM audit_log a JOIN projects p ON p.id = a.project_id
+                  WHERE a.entity_type = 'issue' AND a.action = 'create'",
+            )
+            .unwrap();
+        let rows: Vec<(String, Option<i64>, String)> = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 20, "{rows:?}");
+        for (project, actor, transport) in rows {
+            let lead = if project == "ALICE" {
+                &users[0]
+            } else {
+                &users[1]
+            };
+            assert_eq!(
+                actor,
+                Some(lead.id),
+                "{project} issue attributed to {actor:?}"
+            );
+            assert_eq!(transport, "mcp");
+        }
     }
 
     /// A wrong path token does not match the route at all (no secret leak,

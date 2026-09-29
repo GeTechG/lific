@@ -1461,12 +1461,10 @@ mod tests {
         }
     }
 
-    /// The HTTP transport is already wrapped in `with_request_context` by
-    /// `server.rs`, which holds `MCP_HANDLER_LOCK` for the whole request. If
-    /// the seam took that lock again the request would deadlock, so an
-    /// HTTP-shaped server must pass straight through.
+    /// A session without a stdio credential must not replace the identity
+    /// already scoped around the call; the seam passes straight through.
     #[tokio::test]
-    async fn the_http_transport_seam_does_not_retake_the_handler_lock() {
+    async fn a_tokenless_stdio_seam_keeps_the_scoped_identity() {
         let _sguard = crate::mcp::tools::acquire_test_guard();
         let pool = crate::db::open_memory().expect("test db");
         let server = LificMcp::new(pool.clone());
@@ -1482,7 +1480,7 @@ mod tests {
         assert_eq!(
             seen.map(|u| u.id),
             Some(user.id),
-            "the middleware's identity survives the seam untouched"
+            "the scoped identity survives the seam untouched"
         );
     }
 }
