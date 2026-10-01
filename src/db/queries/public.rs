@@ -85,6 +85,8 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
     // LIF-484: waits name accounts and carry private notes. The public view
     // shows none of them, not even a marker.
     issue.waits.clear();
+    // Properties are internal bookkeeping (paths, tool state), like `source`.
+    issue.properties.clear();
     for relations in [
         &mut issue.blocks,
         &mut issue.blocked_by,

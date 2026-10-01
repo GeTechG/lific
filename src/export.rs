@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -87,6 +87,7 @@ fn ensure_issue_preflight(
     let (metadata_items, source_bytes): (i64, i64) = conn.query_row(
         "SELECT
             (SELECT COUNT(*) FROM issue_labels WHERE issue_id = ?1) +
+            (SELECT COUNT(*) FROM issue_properties WHERE issue_id = ?1) +
             (SELECT COUNT(*) FROM issue_relations WHERE source_id = ?1 OR target_id = ?1),
             length(CAST(i.title AS BLOB)) +
             length(CAST(i.description AS BLOB)) +
@@ -101,6 +102,8 @@ fn ensure_issue_preflight(
                FROM comments c LEFT JOIN users u ON u.id = c.user_id WHERE c.issue_id = ?1 AND c.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM issue_labels il JOIN labels l ON l.id = il.label_id WHERE il.issue_id = ?1) +
+            (SELECT COALESCE(SUM(length(CAST(name AS BLOB)) + length(CAST(value AS BLOB))), 0)
+               FROM issue_properties WHERE issue_id = ?1) +
             (SELECT COALESCE(SUM(length(CAST(other_project.identifier AS BLOB)) + 20), 0)
                FROM issue_relations ir
                JOIN issues other ON other.id = CASE WHEN ir.source_id = ?1 THEN ir.target_id ELSE ir.source_id END
@@ -499,6 +502,7 @@ fn ensure_project_preflight(
             (SELECT COALESCE(SUM(length(CAST(c.content AS BLOB))), 0) FROM comments c JOIN issues i ON i.id = c.issue_id WHERE i.project_id = ?1 AND c.deleted_at IS NULL AND i.deleted_at IS NULL),
             (SELECT COUNT(*) FROM issue_labels il JOIN issues i ON i.id = il.issue_id WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
             (SELECT COUNT(*) FROM page_labels pl JOIN pages p ON p.id = pl.page_id WHERE p.project_id = ?1 AND p.deleted_at IS NULL) +
+            (SELECT COUNT(*) FROM issue_properties ip JOIN issues i ON i.id = ip.issue_id WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
             (SELECT COUNT(*) FROM folders WHERE project_id = ?1) +
             2 * (SELECT COUNT(*) FROM issue_relations ir
                    JOIN issues source ON source.id = ir.source_id
@@ -507,6 +511,9 @@ fn ensure_project_preflight(
                     AND source.deleted_at IS NULL AND target.deleted_at IS NULL),
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM issue_labels il JOIN issues i ON i.id = il.issue_id JOIN labels l ON l.id = il.label_id
+              WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
+            (SELECT COALESCE(SUM(length(CAST(ip.name AS BLOB)) + length(CAST(ip.value AS BLOB))), 0)
+               FROM issue_properties ip JOIN issues i ON i.id = ip.issue_id
               WHERE i.project_id = ?1 AND i.deleted_at IS NULL) +
             (SELECT COALESCE(SUM(length(CAST(l.name AS BLOB))), 0)
                FROM page_labels pl JOIN pages page ON page.id = pl.page_id JOIN labels l ON l.id = pl.label_id
@@ -934,6 +941,8 @@ fn render_issue_markdown(
         priority: crate::db::models::Priority,
         module: Option<String>,
         labels: &'a [String],
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        properties: &'a BTreeMap<String, String>,
         blocks: &'a [String],
         blocked_by: &'a [String],
         relates_to: &'a [String],
@@ -958,6 +967,7 @@ fn render_issue_markdown(
             priority: issue.priority,
             module,
             labels: &issue.labels,
+            properties: &issue.properties,
             blocks: &issue.blocks,
             blocked_by: &issue.blocked_by,
             relates_to: &issue.relates_to,
@@ -1200,6 +1210,7 @@ mod tests {
                 status: Status::Todo,
                 priority: Priority::High,
                 labels: vec!["feature".into()],
+                set_properties: [("footprint".to_string(), "src/a.js, test/".to_string())].into(),
                 ..Default::default()
             },
         )
@@ -1274,6 +1285,13 @@ mod tests {
             .find(|file| file.path.contains("issues/"))
             .unwrap();
         assert!(issue_file.content.contains("identifier: EXP-1"));
+        assert!(
+            issue_file
+                .content
+                .contains("properties:\n  footprint: src/a.js, test/\n"),
+            "{}",
+            issue_file.content
+        );
         assert!(issue_file.content.contains("## Comments"));
         assert_eq!(
             issue_file.content.matches("First exported comment").count(),

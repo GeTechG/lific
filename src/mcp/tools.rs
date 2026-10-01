@@ -447,6 +447,7 @@ fn create_batch_item(
             start_date: item.start_date.clone(),
             target_date: item.target_date.clone(),
             labels,
+            set_properties: item.set_properties.clone().unwrap_or_default(),
             source: None,
             attachments,
         },
@@ -2347,6 +2348,10 @@ No issues found."
                     }
                 )
             })?;
+            issue
+                .properties
+                .iter()
+                .try_for_each(|(name, value)| writeln!(output, "Property {name}: {value}"))?;
             crate::checklist::checklist(&issue.description).map_or(Ok(()), |list| {
                 writeln!(output, "Checklist: {}/{} done", list.done, list.total)
             })?;
@@ -2610,6 +2615,7 @@ No issues found."
                         pid,
                         input.labels.as_deref().unwrap_or_default(),
                     )?,
+                    set_properties: input.set_properties.clone().unwrap_or_default(),
                     source: None,
                     attachments,
                 },
@@ -2671,7 +2677,8 @@ No issues found."
             || input.module.is_some()
             || input.labels.is_some()
             || input.start_date.is_some()
-            || input.target_date.is_some();
+            || input.target_date.is_some()
+            || input.set_properties.is_some();
         if has_single_fields {
             return Err(
                 "with issues, set title and the other fields on each item; only project applies to the whole batch"
@@ -2850,6 +2857,8 @@ No issues found."
                             names::stored_label_names(conn, previous_issue.project_id, labels)
                         })
                         .transpose()?,
+                    set_properties: input.set_properties.clone().unwrap_or_default(),
+                    unset_properties: input.unset_properties.clone().unwrap_or_default(),
                     // LIF-441: omitted means last-writer-wins, unchanged.
                     expected_seq: input.expected_seq,
                     attachments,
@@ -6584,6 +6593,58 @@ mod tests {
     }
 
     #[test]
+    fn properties_are_set_on_create_changed_by_delta_and_shown_by_get_issue() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "PRP");
+        let pairs = |pairs: &[(&str, &str)]| {
+            Some(
+                pairs
+                    .iter()
+                    .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+            )
+        };
+        let created = m.create_issue(Parameters(CreateIssueInput {
+            project: Some("PRP".into()),
+            title: "Carrier".into(),
+            set_properties: pairs(&[("footprint", "src/a.js, test/"), ("pr", "41")]),
+            ..Default::default()
+        }));
+        assert!(created.contains("PRP-1"), "got: {created}");
+
+        let updated = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "PRP-1".into(),
+            set_properties: pairs(&[("footprint", "src/b.js")]),
+            unset_properties: Some(vec!["pr".into(), "absent".into()]),
+            ..Default::default()
+        }));
+        assert!(!updated.starts_with("Error"), "got: {updated}");
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "PRP-1".into(),
+            ..Default::default()
+        }));
+        assert!(
+            detail.contains("Property footprint: src/b.js\n"),
+            "got: {detail}"
+        );
+        assert!(!detail.contains("Property pr"), "got: {detail}");
+
+        let refused = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "PRP-1".into(),
+            title: Some("Should not land".into()),
+            set_properties: pairs(&[("Bad Name", "v")]),
+            ..Default::default()
+        }));
+        assert!(
+            refused.contains("invalid property name 'Bad Name'"),
+            "got: {refused}"
+        );
+        let conn = m.db.read().unwrap();
+        assert_eq!(queries::get_issue(&conn, 1).unwrap().title, "Carrier");
+    }
+
+    #[test]
     fn update_issue_sets_start_date() {
         let (m, _guard) = mcp();
         seed_project(&m, "Test", "STD");
@@ -8322,6 +8383,7 @@ mod tests {
             seq: 1,
             source: None,
             labels: vec!["bug".into()],
+            properties: Default::default(),
             blocks: vec!["T-2".into()],
             blocked_by: vec![],
             relates_to: vec![],

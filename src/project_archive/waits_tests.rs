@@ -189,3 +189,63 @@ fn malformed_wait_rows_are_rejected_before_import() {
     table.rows.push(copy);
     assert!(validate_manifest(&duplicated).is_err());
 }
+
+#[test]
+fn issue_properties_round_trip_and_a_bad_row_is_rejected() {
+    let (source, dir, store) = source();
+    {
+        let conn = source.write().unwrap();
+        conn.execute_batch(
+            "INSERT INTO issue_properties(issue_id,name,value)
+               VALUES (30,'footprint','src/a.js, test/'),(31,'pr','41');",
+        )
+        .unwrap();
+    }
+    let archive = dir.path().join("properties.tar.gz");
+    export(&source, &store, "LIF", &archive).unwrap();
+    let (dest, _dest_dir, dest_store) = destination();
+    import(&dest, &dest_store, &archive, "owner").unwrap();
+    {
+        let conn = dest.read().unwrap();
+        let issue = queries::resolve_identifier(&conn, "LIF-1").unwrap();
+        let properties = queries::get_issue(&conn, issue).unwrap().properties;
+        assert_eq!(
+            properties.get("footprint").map(String::as_str),
+            Some("src/a.js, test/")
+        );
+        assert_eq!(properties.len(), 1);
+    }
+
+    let conn = source.read().unwrap();
+    let s = spec("issue_properties").unwrap();
+    let mutate = |f: &dyn Fn(&mut Vec<Row>)| {
+        let mut m = collect_manifest(&conn, "LIF").unwrap();
+        let table = m
+            .tables
+            .iter_mut()
+            .find(|t| t.name == "issue_properties")
+            .unwrap();
+        f(&mut table.rows);
+        validate_manifest(&m)
+    };
+    assert!(mutate(&|_| {}).is_ok());
+    assert!(mutate(&|rows| s.set(&mut rows[0], "name", "Bad Name".into())).is_err());
+    assert!(mutate(&|rows| s.set(&mut rows[0], "value", "".into())).is_err());
+    assert!(mutate(&|rows| s.set(&mut rows[0], "issue_id", 999.into())).is_err());
+    assert!(mutate(&|rows| rows.push(rows[0].clone())).is_err());
+}
+
+#[test]
+fn an_archive_from_before_properties_still_imports() {
+    let (source, dir, _store) = source();
+    let conn = source.read().unwrap();
+    let mut manifest = collect_manifest(&conn, "LIF").unwrap();
+    drop(conn);
+    manifest
+        .tables
+        .retain(|table| table.name != "issue_properties");
+    let path = dir.path().join("old.tar.gz");
+    super::tests::write_manifest(&path, &manifest, &[]);
+    let (dest, _dest_dir, dest_store) = destination();
+    import(&dest, &dest_store, &path, "owner").unwrap();
+}

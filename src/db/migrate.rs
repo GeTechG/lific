@@ -286,6 +286,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue status in_review",
         include_str!("../../migrations/058_issue_status_in_review.sql"),
     ),
+    (
+        59,
+        "issue properties",
+        include_str!("../../migrations/059_issue_properties.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -976,7 +981,7 @@ mod tests {
         assert_eq!(before.len(), 5);
         let triggers_before = count(
             &conn,
-            "SELECT count(*) FROM sqlite_master WHERE type='trigger'",
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties'",
         );
 
         run(&conn).unwrap();
@@ -985,7 +990,7 @@ mod tests {
         assert_eq!(
             count(
                 &conn,
-                "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties'"
             ),
             triggers_before
         );
@@ -1037,6 +1042,48 @@ mod tests {
         // Children still cascade from the rebuilt parent.
         conn.execute("DELETE FROM issues WHERE id=3", []).unwrap();
         assert_eq!(count(&conn, "SELECT count(*) FROM issue_labels"), 0);
+    }
+
+    /// Migration 059 adds a table next to issues that already exist: they
+    /// read back with no properties, and the table enforces the name and
+    /// value rules on its own.
+    #[test]
+    fn issue_properties_upgrade_leaves_existing_issues_bare_and_checks_names() {
+        let conn = migrated_up_to(59);
+        conn.execute_batch(
+            "INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title,status) VALUES(1,1,1,'Old','in_review');",
+        )
+        .unwrap();
+        let seq_before = seq_of(&conn, "issues", 1);
+
+        run(&conn).unwrap();
+
+        let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
+        assert_eq!(issue.status, Status::InReview);
+        assert!(issue.properties.is_empty());
+        assert_eq!(seq_of(&conn, "issues", 1), seq_before);
+
+        let insert = |name: &str, value: &str| {
+            conn.execute(
+                "INSERT INTO issue_properties(issue_id,name,value) VALUES(1,?1,?2)",
+                [name, value],
+            )
+        };
+        insert("footprint", "src/").expect("a valid property");
+        assert!(seq_of(&conn, "issues", 1) > seq_before);
+        for (name, value) in [
+            ("footprint", "again"),
+            ("Upper", "v"),
+            ("-dash", "v"),
+            ("sp ace", "v"),
+            ("", "v"),
+            ("empty", ""),
+        ] {
+            assert!(insert(name, value).is_err(), "{name:?}={value:?}");
+        }
+        assert!(insert(&"n".repeat(65), "v").is_err());
+        insert(&"n".repeat(64), "v").expect("64 characters fit");
     }
 
     fn stored_checksum(conn: &Connection, version: i64) -> Option<String> {

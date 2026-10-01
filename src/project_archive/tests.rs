@@ -36,6 +36,7 @@ pub(super) fn seed(pool: &DbPool, store: &AttachmentStore) {
         INSERT INTO page_issue_links VALUES(40,30);
         INSERT INTO issue_waits(id,issue_id,kind,user_id,note) VALUES(90,30,'user',1,'decide');
         INSERT INTO issue_waits(id,issue_id,kind,earliest,latest,note) VALUES(91,30,'date','2026-09-28','2026-09-29','office');
+        INSERT INTO issue_properties(issue_id,name,value) VALUES(30,'footprint','src/a.js, test/'),(32,'footprint','PRIVATE PROPERTY');
         UPDATE issues SET status='done' WHERE id=30;
         UPDATE issues SET deleted_at='2025-02-03 00:00:00' WHERE id=31;
         UPDATE pages SET deleted_at='2025-02-03 00:00:00' WHERE id=41;").unwrap();

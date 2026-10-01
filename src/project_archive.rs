@@ -253,6 +253,13 @@ const SPECS: &[Spec] = &[
         columns: "id,issue_id,kind,username,earliest,latest,note,created_at",
         scope: "issue_id IN (SELECT id FROM issues WHERE project_id = ?1)",
     },
+    // Free-form issue properties. Archives written before this table existed
+    // simply lack it.
+    Spec {
+        name: "issue_properties",
+        columns: "issue_id,name,value,created_at,updated_at",
+        scope: "issue_id IN (SELECT id FROM issues WHERE project_id = ?1)",
+    },
     Spec {
         name: "page_issue_links",
         columns: "page_id,issue_id",
@@ -1075,7 +1082,7 @@ fn upgrade_manifest(m: &mut Manifest) {
 
 /// Tables added after format v1 shipped. An archive from an older Lific
 /// lacks them, which means "none of these rows", not a damaged archive.
-const OPTIONAL_TABLES: &[&str] = &["issue_waits"];
+const OPTIONAL_TABLES: &[&str] = &["issue_waits", "issue_properties"];
 
 fn backfill_optional_tables(m: &mut Manifest) {
     for name in OPTIONAL_TABLES {
@@ -1128,6 +1135,32 @@ fn validate_wait_rows(m: &Manifest) -> Result<()> {
         }
         if !seen.insert((issue, key)) {
             return Err(invalid("duplicate wait"));
+        }
+    }
+    Ok(())
+}
+
+/// An `issue_properties` row must satisfy the same name, value and
+/// uniqueness rules a write through the API does, so a bad archive is a 400
+/// and not a failed statement.
+fn validate_property_rows(m: &Manifest) -> Result<()> {
+    let s = spec("issue_properties")?;
+    let mut seen = BTreeSet::new();
+    for row in m.rows("issue_properties") {
+        let name = text(s.get(row, "name"))?;
+        let rejected = |error: LificError| invalid(format!("invalid issue property: {error}"));
+        db::queries::properties::validate_property_name(name).map_err(rejected)?;
+        db::queries::properties::validate_property_value(name, text(s.get(row, "value"))?)
+            .map_err(rejected)?;
+        for column in ["created_at", "updated_at"] {
+            if !s.get(row, column).is_string() {
+                return Err(invalid(format!(
+                    "invalid type for issue_properties.{column}"
+                )));
+            }
+        }
+        if !seen.insert((number(s.get(row, "issue_id"))?, name)) {
+            return Err(invalid("duplicate issue property"));
         }
     }
     Ok(())
@@ -1383,6 +1416,7 @@ fn validate_manifest(m: &Manifest) -> Result<()> {
         return Err(invalid("unreferenced blob"));
     }
     validate_wait_rows(m)?;
+    validate_property_rows(m)?;
     let linked: BTreeSet<i64> = m
         .rows("attachment_links")
         .iter()

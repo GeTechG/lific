@@ -144,6 +144,9 @@ pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     if !issue.labels.is_empty() {
         w!(out, "  Labels:   {}", issue.labels.join(", "));
     }
+    for (name, value) in &issue.properties {
+        w!(out, "  {name}: {value}");
+    }
     if let Some(name) = issue.module_id.and_then(module_name) {
         w!(out, "  Module:   {name}");
     }
@@ -569,6 +572,7 @@ mod tests {
             seq: 1,
             source: None,
             labels: Vec::new(),
+            properties: Default::default(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),
             relates_to: Vec::new(),

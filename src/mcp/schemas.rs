@@ -1,6 +1,7 @@
 use rmcp::schemars;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 // LIF-474: every input denies unknown fields, nested ones included, so a
 // misspelled optional parameter fails instead of being silently dropped.
@@ -155,6 +156,8 @@ pub struct CreateIssueInput {
     pub start_date: Option<String>,
     #[schemars(description = "Target/due date (ISO 8601 date, e.g. 2026-06-15)")]
     pub target_date: Option<String>,
+    #[schemars(description = "Text properties to set: {name: value}")]
+    pub set_properties: Option<BTreeMap<String, String>>,
     #[schemars(
         description = "Create up to 50 issues atomically instead: each item takes the fields above except project. Only project may accompany it.",
         schema_with = "create_issue_items_schema"
@@ -187,6 +190,7 @@ pub struct CreateIssueItem {
     pub labels: Option<Vec<String>>,
     pub start_date: Option<String>,
     pub target_date: Option<String>,
+    pub set_properties: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -212,6 +216,10 @@ pub struct UpdateIssueInput {
     pub start_date: Option<String>,
     #[schemars(description = "New target/due date (ISO 8601 date, e.g. 2026-06-15)")]
     pub target_date: Option<String>,
+    #[schemars(description = "Text properties to set: {name: value}. Others are kept.")]
+    pub set_properties: Option<BTreeMap<String, String>>,
+    #[schemars(description = "Property names to remove")]
+    pub unset_properties: Option<Vec<String>>,
     #[schemars(
         description = "Optional concurrency check: the 'seq' you last read for this issue. The update is refused if the issue has changed since. Omit for last-writer-wins."
     )]

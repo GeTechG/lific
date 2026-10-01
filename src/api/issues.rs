@@ -485,6 +485,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn properties_are_set_and_unset_as_deltas_and_shown_on_every_read() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let created = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({
+                    "project_id": project_id,
+                    "title": "Carrier",
+                    "set_properties": {"footprint": "src/a.js, test/", "pr": "41"},
+                }),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+        assert_eq!(
+            created["properties"],
+            serde_json::json!({"footprint": "src/a.js, test/", "pr": "41"})
+        );
+
+        // A delta with no read first: one name changed, one removed (plus one
+        // that was never there), nothing else touched.
+        let resp = json_put(
+            &app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({
+                "set_properties": {"footprint": "src/b.js"},
+                "unset_properties": ["pr", "absent"],
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let expected = serde_json::json!({"footprint": "src/b.js"});
+        assert_eq!(body_of(resp).await["properties"], expected);
+
+        let fetched = body_of(json_get(&app, &format!("/api/issues/{id}")).await).await;
+        assert_eq!(fetched["properties"], expected);
+        let listed =
+            body_of(json_get(&app, &format!("/api/issues?project_id={project_id}")).await).await;
+        assert_eq!(listed[0]["properties"], expected);
+        let changes =
+            body_of(json_get(&app, &format!("/api/projects/{project_id}/changes")).await).await;
+        assert_eq!(changes["changes"][0]["properties"], expected);
+
+        // An issue with none carries an empty object, like `labels: []`.
+        let bare = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Bare"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(bare["properties"], serde_json::json!({}));
+
+        let feed = body_of(json_get(&app, &format!("/api/issues/{id}/activity")).await).await;
+        let fields: Vec<&str> = feed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry["field"].as_str())
+            .filter(|field| field.starts_with("property:"))
+            .collect();
+        assert_eq!(fields.len(), 4, "two sets, one change, one unset: {feed}");
+        assert!(fields.contains(&"property:pr"), "{feed}");
+    }
+
+    #[tokio::test]
+    async fn a_bad_property_is_a_400_that_changes_nothing() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let (id, _) = seed_issue_with_seq(&app, project_id, "Steady").await;
+        for body in [
+            serde_json::json!({"title": "Moved", "set_properties": {"Bad Name": "v"}}),
+            serde_json::json!({"title": "Moved", "set_properties": {"empty": ""}}),
+            serde_json::json!({"title": "Moved", "set_properties": {"big": "x".repeat(4097)}}),
+            serde_json::json!({"title": "Moved", "unset_properties": ["Bad Name"]}),
+        ] {
+            let resp = json_put(&app, &format!("/api/issues/{id}"), body.clone()).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+        let resp = json_post(
+            &app,
+            "/api/issues",
+            serde_json::json!({
+                "project_id": project_id,
+                "title": "Never",
+                "set_properties": {"-lead": "v"},
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let fresh = body_of(json_get(&app, &format!("/api/issues/{id}")).await).await;
+        assert_eq!(fresh["title"], "Steady");
+        assert_eq!(fresh["properties"], serde_json::json!({}));
+        let listed =
+            body_of(json_get(&app, &format!("/api/issues?project_id={project_id}")).await).await;
+        assert_eq!(
+            listed.as_array().unwrap().len(),
+            1,
+            "the refused create left no row"
+        );
+    }
+
+    #[tokio::test]
     async fn a_fresh_expected_seq_lets_the_update_through_and_returns_the_new_seq() {
         let app = test_app();
         let (project_id, _) = seed_project(&app).await;

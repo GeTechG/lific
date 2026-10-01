@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +294,10 @@ pub struct Issue {
     /// Labels attached to this issue (populated on read)
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Free-form text properties, by name (populated on read). Always
+    /// present, `{}` when the issue has none, like `labels`.
+    #[serde(default)]
+    pub properties: BTreeMap<String, String>,
     /// Relations (populated on read for get_issue)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
@@ -412,6 +418,10 @@ pub struct CreateIssue {
     pub target_date: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Properties to set on the new issue, by name. Same field as on
+    /// [`UpdateIssue`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub set_properties: BTreeMap<String, String>,
     /// Import provenance marker (LIF-264/265). `None` for hand-created issues.
     #[serde(default)]
     pub source: Option<String>,
@@ -448,6 +458,14 @@ pub struct UpdateIssue {
     pub target_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
+    /// Property delta, applied on the server in the same transaction as the
+    /// rest of the update: names to set (to a non-empty value) and names to
+    /// remove. Other properties are left alone, so no prior read is needed.
+    /// Unsetting a name the issue does not carry is a no-op.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub set_properties: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unset_properties: Vec<String>,
     /// LIF-441: optimistic-concurrency precondition. `None` (the default, and
     /// what every existing client sends) keeps last-writer-wins. `Some(seq)`
     /// makes the update conditional on the row still carrying that `seq` when
@@ -1277,6 +1295,8 @@ pub struct IssueChange {
     /// Label names, resolved in one grouped query per page rather than one
     /// query per row.
     pub labels: Vec<String>,
+    /// Free-form text properties, one grouped query per page.
+    pub properties: BTreeMap<String, String>,
     /// LIF-484: user and date blockers, one grouped query per page. Adding
     /// or clearing one advances the issue's seq, so a replica sees it.
     #[serde(skip_serializing_if = "Vec::is_empty")]

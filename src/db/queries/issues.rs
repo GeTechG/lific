@@ -37,6 +37,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                 source: row.get(14)?,
                 seq: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
                 labels: Vec::new(),
+                properties: Default::default(),
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
                 relates_to: Vec::new(),
@@ -141,6 +142,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
         .collect::<Result<Vec<String>, _>>()?;
 
     issue.waits = super::waits::list_waits(conn, id)?;
+    issue.properties = super::properties::list_properties(conn, id)?;
 
     Ok(issue)
 }
@@ -476,6 +478,7 @@ pub fn list_issues_page(
             // this hot list query's column set stable.
             source: None,
             labels: Vec::new(),
+            properties: Default::default(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),
             relates_to: Vec::new(),
@@ -560,8 +563,10 @@ pub fn list_issues_page(
         // LIF-484: waits are few and always rendered, so every page carries
         // them, in one grouped query.
         let mut waits = super::waits::waits_by_issue(conn, &ids)?;
+        let mut properties = super::properties::properties_by_issue(conn, &ids)?;
         for issue in &mut issues {
             issue.waits = waits.remove(&issue.id).unwrap_or_default();
+            issue.properties = properties.remove(&issue.id).unwrap_or_default();
         }
     }
 
@@ -644,6 +649,7 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
     if let Some(module_id) = input.module_id {
         validate_module_project(conn, input.project_id, module_id)?;
     }
+    super::properties::validate_delta(&input.set_properties, &[])?;
 
     // Deliberately counts tombstones too (LIF-438): sequence numbers are the
     // user-visible identifier, and reusing one that a soft-deleted issue still
@@ -686,6 +692,7 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
                 params![id, input.project_id, label_name],
             )?;
         }
+        super::properties::apply_delta(conn, id, &input.set_properties, &[])?;
         // LIF-409: attachment links are derived from the description, so they
         // are reconciled here rather than by each transport afterwards. Inside
         // this savepoint a failed link rolls the whole issue back, which is
@@ -708,6 +715,7 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
     if let Some(Some(module_id)) = input.module_id {
         validate_module_project(conn, issue.project_id, module_id)?;
     }
+    super::properties::validate_delta(&input.set_properties, &input.unset_properties)?;
 
     super::savepoint::<_, Issue>(conn, "update_issue", || {
         // LIF-441: the precondition is checked inside the savepoint, on the
@@ -791,6 +799,7 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
                 )?;
             }
         }
+        super::properties::apply_delta(conn, id, &input.set_properties, &input.unset_properties)?;
         // LIF-409: re-scan the stored description (edited or not) and
         // reconcile links, in the same savepoint as the edit itself. Read back
         // from the row rather than from `input`, so an update that leaves the
