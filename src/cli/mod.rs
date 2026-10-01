@@ -888,6 +888,33 @@ pub enum IssueAction {
         )]
         remove_label: Vec<String>,
     },
+
+    /// Relate two issues. With the default type, SOURCE blocks TARGET
+    Link {
+        /// Source issue identifier: the blocker, or the duplicate (e.g. LIF-1)
+        source: String,
+
+        /// Target issue identifier: the blocked issue, or the original (e.g. APP-7)
+        target: String,
+
+        /// Relation from SOURCE to TARGET
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            default_value = "blocks",
+            value_parser = ["blocks", "relates_to", "duplicate"]
+        )]
+        relation_type: String,
+    },
+
+    /// Remove every relation between two issues, in either direction
+    Unlink {
+        /// One issue identifier (e.g. LIF-1)
+        source: String,
+
+        /// The other issue identifier (e.g. APP-7)
+        target: String,
+    },
 }
 
 // ── Project ──────────────────────────────────────────────────
@@ -2777,6 +2804,47 @@ mod tests {
             .expect("combining --labels with a label edit must fail");
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
+    }
+
+    #[test]
+    fn parse_issue_link_defaults_to_blocks() {
+        let cli = Cli::try_parse_from(["lific", "issue", "link", "HPS-1", "SPR-1"]).unwrap();
+        match cli.command {
+            Command::Issue {
+                action:
+                    IssueAction::Link {
+                        source,
+                        target,
+                        relation_type,
+                    },
+            } => {
+                assert_eq!(source, "HPS-1");
+                assert_eq!(target, "SPR-1");
+                assert_eq!(relation_type, "blocks");
+            }
+            _ => panic!("expected Issue Link"),
+        }
+    }
+
+    #[test]
+    fn parse_issue_link_accepts_only_known_relation_types() {
+        let link = |relation| {
+            Cli::try_parse_from(["lific", "issue", "link", "A-1", "B-1", "--type", relation])
+        };
+        assert!(link("relates_to").is_ok());
+        assert!(link("duplicate").is_ok());
+        assert!(link("blocked_by").is_err());
+    }
+
+    #[test]
+    fn parse_issue_unlink() {
+        let cli = Cli::try_parse_from(["lific", "issue", "unlink", "HPS-1", "SPR-1"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Issue {
+                action: IssueAction::Unlink { source, target }
+            } if source == "HPS-1" && target == "SPR-1"
+        ));
     }
 
     // ── Project CLI tests ────────────────────────────────────

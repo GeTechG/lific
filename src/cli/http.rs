@@ -250,6 +250,12 @@ impl HttpBackend {
                     let issue: models::Issue = decode(value)?;
                     render::issue_updated(&issue)
                 }
+                IssueAction::Link {
+                    source,
+                    target,
+                    relation_type,
+                } => render::issue_linked(source, target, relation_type),
+                IssueAction::Unlink { source, target } => render::issue_unlinked(source, target),
             },
             Command::Project { action } => match action {
                 ProjectAction::List => {
@@ -524,6 +530,24 @@ impl HttpBackend {
                     ..Default::default()
                 };
                 self.send_json(Method::PUT, &format!("/api/issues/{id}"), &body)
+                    .await
+            }
+            IssueAction::Link {
+                source,
+                target,
+                relation_type,
+            } => {
+                let body = serde_json::json!({
+                    "source": source,
+                    "target": target,
+                    "relation_type": relation_type,
+                });
+                self.send_json(Method::POST, "/api/issues/link", &body)
+                    .await
+            }
+            IssueAction::Unlink { source, target } => {
+                let body = serde_json::json!({"source": source, "target": target});
+                self.send_json(Method::POST, "/api/issues/unlink", &body)
                     .await
             }
         }
@@ -2972,6 +2996,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(labels(removed), ["bug", "fresh"]);
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn links_and_unlinks_issues_over_http_against_real_api_router() {
+        let fixture = spawn_real_api_server().await;
+        {
+            let conn = fixture.db.write().unwrap();
+            crate::db::queries::create_issue(
+                &conn,
+                &models::CreateIssue {
+                    project_id: 1,
+                    title: "Blocked".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let issue = |action| Command::Issue { action };
+        let get_blocked = || {
+            issue(IssueAction::Get {
+                identifier: "TST-2".into(),
+            })
+        };
+
+        let linked = backend
+            .execute(
+                &issue(IssueAction::Link {
+                    source: "TST-1".into(),
+                    target: "TST-2".into(),
+                    relation_type: "blocks".into(),
+                }),
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(linked, json!({"linked": true}));
+        let blocked = backend
+            .execute(&get_blocked(), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert_eq!(blocked["blocked_by"], json!(["TST-1"]));
+
+        let unlinked = backend
+            .execute(
+                &issue(IssueAction::Unlink {
+                    source: "TST-1".into(),
+                    target: "TST-2".into(),
+                }),
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(unlinked, json!({"unlinked": true}));
+        let free = backend
+            .execute(&get_blocked(), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert!(free.get("blocked_by").is_none());
         fixture.server.abort();
     }
 

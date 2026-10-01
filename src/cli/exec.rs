@@ -387,6 +387,38 @@ fn issue(
                 print!("{}", render::issue_updated(&issue));
             }
         }
+
+        IssueAction::Link {
+            source,
+            target,
+            relation_type,
+        } => {
+            let conn = pool.write()?;
+            let source_id = queries::resolve_identifier(&conn, source)?;
+            let target_id = queries::resolve_identifier(&conn, target)?;
+            queries::link_issues(&conn, source_id, target_id, relation_type)?;
+            drop(conn);
+
+            if json {
+                print_json(&serde_json::json!({"linked": true}));
+            } else {
+                print!("{}", render::issue_linked(source, target, relation_type));
+            }
+        }
+
+        IssueAction::Unlink { source, target } => {
+            let conn = pool.write()?;
+            let source_id = queries::resolve_identifier(&conn, source)?;
+            let target_id = queries::resolve_identifier(&conn, target)?;
+            queries::unlink_issues(&conn, source_id, target_id)?;
+            drop(conn);
+
+            if json {
+                print_json(&serde_json::json!({"unlinked": true}));
+            } else {
+                print!("{}", render::issue_unlinked(source, target));
+            }
+        }
     }
     Ok(())
 }
@@ -1733,6 +1765,54 @@ mod tests {
         let mut labels = update_labels(&pool, &["no-such-label"], &[]);
         labels.sort();
         assert_eq!(labels, ["bug", "fresh"]);
+    }
+
+    #[test]
+    fn exec_issue_link_blocks_across_projects_and_unlink_clears_it() {
+        let pool = test_pool();
+        seed_project(&pool, "HPS");
+        seed_project(&pool, "SPR");
+        seed_issue(&pool, "HPS", "Blocker");
+        seed_issue(&pool, "SPR", "Blocked");
+        let blocked_by = || {
+            let conn = pool.read().unwrap();
+            let id = queries::resolve_identifier(&conn, "SPR-1").unwrap();
+            queries::get_issue(&conn, id).unwrap().blocked_by
+        };
+
+        let link = Command::Issue {
+            action: IssueAction::Link {
+                source: "HPS-1".into(),
+                target: "SPR-1".into(),
+                relation_type: "blocks".into(),
+            },
+        };
+        run(&pool, &link, true, None).unwrap();
+        assert_eq!(blocked_by(), ["HPS-1"]);
+
+        let unlink = Command::Issue {
+            action: IssueAction::Unlink {
+                source: "HPS-1".into(),
+                target: "SPR-1".into(),
+            },
+        };
+        run(&pool, &unlink, false, None).unwrap();
+        assert!(blocked_by().is_empty());
+    }
+
+    #[test]
+    fn exec_issue_link_rejects_an_unknown_issue() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        seed_issue(&pool, "TST", "Only");
+        let link = Command::Issue {
+            action: IssueAction::Link {
+                source: "TST-1".into(),
+                target: "TST-99".into(),
+                relation_type: "blocks".into(),
+            },
+        };
+        assert!(run(&pool, &link, false, None).is_err());
     }
 
     #[test]

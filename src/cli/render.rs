@@ -182,6 +182,14 @@ pub fn issue_updated(issue: &Issue) -> String {
     out
 }
 
+pub fn issue_linked(source: &str, target: &str, relation_type: &str) -> String {
+    format!("Linked: {source} {relation_type} {target}\n")
+}
+
+pub fn issue_unlinked(source: &str, target: &str) -> String {
+    format!("Unlinked {source} and {target}\n")
+}
+
 // ── Project ──────────────────────────────────────────────────
 
 pub fn project_list(projects: &[Project]) -> String {
