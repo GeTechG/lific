@@ -31,9 +31,9 @@ use super::weblinks::{
     IssueLinkOutput, ResourceKind, linked_comments, linked_modules, linked_resources,
 };
 use super::{
-    Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
-    PageAction, ProjectAction, assignee_edit, edited_labels, owned_labels, parsed_property_sets,
-    render,
+    Command, CommentAction, ExportAction, FolderAction, IssueAction, IssueLogAction, LabelAction,
+    ModuleAction, PageAction, ProjectAction, assignee_edit, edited_labels, log_lines, owned_labels,
+    parsed_property_sets, render,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -257,6 +257,15 @@ impl HttpBackend {
                     relation_type,
                 } => render::issue_linked(source, target, relation_type),
                 IssueAction::Unlink { source, target } => render::issue_unlinked(source, target),
+                IssueAction::Log {
+                    action: IssueLogAction::Add { identifier, .. },
+                } => {
+                    let lines: Vec<models::IssueLogLine> = decode(value)?;
+                    render::issue_log_appended(identifier, lines.len())
+                }
+                IssueAction::Log {
+                    action: IssueLogAction::List { .. },
+                } => render::issue_log(&decode::<Vec<models::IssueLogLine>>(value)?),
             },
             Command::Project { action } => match action {
                 ProjectAction::List => {
@@ -562,6 +571,41 @@ impl HttpBackend {
                     "relation_type": relation_type,
                 });
                 self.send_json(Method::POST, "/api/issues/link", &body)
+                    .await
+            }
+            IssueAction::Log {
+                action:
+                    IssueLogAction::Add {
+                        identifier,
+                        source,
+                        line,
+                    },
+            } => {
+                let body = models::AppendIssueLog {
+                    source: source.clone(),
+                    lines: log_lines(line)?,
+                };
+                let id = self.issue_id(identifier).await?;
+                self.send_json(Method::POST, &format!("/api/issues/{id}/log"), &body)
+                    .await
+            }
+            IssueAction::Log {
+                action:
+                    IssueLogAction::List {
+                        identifier,
+                        after,
+                        limit,
+                    },
+            } => {
+                let id = self.issue_id(identifier).await?;
+                let params = [
+                    after.map(|value| ("after", Cow::Owned(value.to_string()))),
+                    limit.map(|value| ("limit", Cow::Owned(value.to_string()))),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+                self.get_json(&format!("/api/issues/{id}/log"), &params)
                     .await
             }
             IssueAction::Unlink { source, target } => {
@@ -3251,6 +3295,69 @@ mod tests {
         assert!(cleared["assignee"].is_null());
         let listed = backend.execute(&list, IssueLinkOutput::Url).await.unwrap();
         assert!(listed.as_array().unwrap().is_empty());
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn appends_and_follows_the_run_log_over_http() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let identifier = fixture.issue_identifier.clone();
+        let log = |action| Command::Issue {
+            action: IssueAction::Log { action },
+        };
+        let get = Command::Issue {
+            action: IssueAction::Get {
+                identifier: identifier.clone(),
+            },
+        };
+        let before = backend.execute(&get, IssueLinkOutput::Url).await.unwrap();
+
+        let add = log(crate::cli::IssueLogAction::Add {
+            identifier: identifier.clone(),
+            source: "run-7".into(),
+            line: vec!["cloning".into(), "testing".into(), "pushing".into()],
+        });
+        let appended = backend.execute(&add, IssueLinkOutput::Url).await.unwrap();
+        let appended = appended.as_array().unwrap();
+        assert_eq!(appended.len(), 3);
+        let keys: Vec<&String> = appended[0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["id", "source", "text", "ts"]);
+        assert_eq!(
+            backend.human(&add, &json!(appended)).await,
+            format!("Appended 3 log line(s) to {identifier}\n")
+        );
+
+        let list = |after: Option<i64>, limit| {
+            log(crate::cli::IssueLogAction::List {
+                identifier: identifier.clone(),
+                after,
+                limit,
+            })
+        };
+        let all = backend
+            .execute(&list(None, None), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert_eq!(all, json!(appended));
+        let followed = backend
+            .execute(
+                &list(appended[0]["id"].as_i64(), Some(1)),
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(followed, json!([appended[1]]));
+        assert!(
+            backend
+                .human(&list(None, None), &all)
+                .await
+                .contains("[run-7] pushing\n")
+        );
+
+        let after = backend.execute(&get, IssueLinkOutput::Url).await.unwrap();
+        assert_eq!(after["seq"], before["seq"], "a log line is not an edit");
+        assert_eq!(after["updated_at"], before["updated_at"]);
         fixture.server.abort();
     }
 

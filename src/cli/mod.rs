@@ -103,6 +103,15 @@ pub(super) fn parsed_property_sets(
     Ok(parsed)
 }
 
+/// The lines `issue log add` appends: the `--line` flags, or else standard
+/// input, one log line per input line.
+pub(super) fn log_lines(lines: &[String]) -> std::io::Result<Vec<String>> {
+    if !lines.is_empty() {
+        return Ok(lines.to_vec());
+    }
+    std::io::stdin().lines().collect()
+}
+
 /// `--assignee` / `--unassign` as the tristate `UpdateIssue::assignee`
 /// carries: neither flag leaves the assignee alone.
 pub(super) fn assignee_edit(assignee: &Option<String>, unassign: bool) -> Option<Option<String>> {
@@ -972,6 +981,44 @@ pub enum IssueAction {
 
         /// The other issue identifier (e.g. APP-7)
         target: String,
+    },
+
+    /// Append to or read an issue's run log: what an agent is doing right now
+    Log {
+        #[command(subcommand)]
+        action: IssueLogAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum IssueLogAction {
+    /// Append lines, read from standard input unless --line is given.
+    /// Does not count as a change to the issue
+    Add {
+        /// Issue identifier (e.g. LIF-42)
+        identifier: String,
+
+        /// A short label for what is writing, such as a run id
+        #[arg(long, value_name = "TEXT", default_value = "")]
+        source: String,
+
+        /// A line to append (repeatable) instead of reading standard input
+        #[arg(long = "line", value_name = "TEXT")]
+        line: Vec<String>,
+    },
+
+    /// Show the newest lines, oldest first
+    List {
+        /// Issue identifier (e.g. LIF-42)
+        identifier: String,
+
+        /// Only lines after this line id, to follow the log
+        #[arg(long, value_name = "ID")]
+        after: Option<i64>,
+
+        /// Max lines (default 200, at most 2000)
+        #[arg(long)]
+        limit: Option<i64>,
     },
 }
 
@@ -2830,6 +2877,52 @@ mod tests {
             panic!("expected Issue List");
         };
         assert_eq!(assignee.as_deref(), Some("kit"));
+    }
+
+    #[test]
+    fn parse_issue_log_commands() {
+        let action = |args: &[&str]| {
+            let mut argv = vec!["lific", "issue", "log"];
+            argv.extend_from_slice(args);
+            match Cli::try_parse_from(argv).unwrap().command {
+                Command::Issue {
+                    action: IssueAction::Log { action },
+                } => action,
+                _ => panic!("expected Issue Log"),
+            }
+        };
+        let IssueLogAction::Add {
+            identifier,
+            source,
+            line,
+        } = action(&[
+            "add",
+            "LIF-42",
+            "--source",
+            "run-7",
+            "--line",
+            "one",
+            "--line",
+            "two, three",
+        ])
+        else {
+            panic!("expected Add");
+        };
+        assert_eq!(identifier, "LIF-42");
+        assert_eq!(source, "run-7");
+        assert_eq!(line, ["one", "two, three"]);
+        assert_eq!(log_lines(&line).unwrap(), line, "--line wins over stdin");
+
+        let IssueLogAction::List {
+            identifier,
+            after,
+            limit,
+        } = action(&["list", "LIF-42", "--after", "17", "--limit", "5"])
+        else {
+            panic!("expected List");
+        };
+        assert_eq!(identifier, "LIF-42");
+        assert_eq!((after, limit), (Some(17), Some(5)));
     }
 
     #[test]

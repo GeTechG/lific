@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::db::models::{
-    Comment, Folder, Issue, Label, Module, Page, Priority, Project, SearchResult, Status,
+    Comment, Folder, Issue, IssueLogLine, Label, Module, Page, Priority, Project, SearchResult,
+    Status,
 };
 
 /// What a `delete` prints under `--json`.
@@ -141,6 +142,32 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
         );
     }
     out
+}
+
+pub fn issue_log(lines: &[IssueLogLine]) -> String {
+    let mut out = String::new();
+    if lines.is_empty() {
+        w!(out, "No log lines.");
+    }
+    for line in lines {
+        if line.source.is_empty() {
+            w!(out, "{:>6}  {}  {}", line.id, line.ts, line.text);
+        } else {
+            w!(
+                out,
+                "{:>6}  {}  [{}] {}",
+                line.id,
+                line.ts,
+                line.source,
+                line.text
+            );
+        }
+    }
+    out
+}
+
+pub fn issue_log_appended(identifier: &str, count: usize) -> String {
+    format!("Appended {count} log line(s) to {identifier}\n")
 }
 
 pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {

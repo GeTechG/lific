@@ -422,6 +422,54 @@ fn issue(
             }
         }
 
+        IssueAction::Log {
+            action:
+                IssueLogAction::Add {
+                    identifier,
+                    source,
+                    line,
+                },
+        } => {
+            let lines = log_lines(line)?;
+            let conn = pool.write()?;
+            let id = queries::resolve_identifier(&conn, identifier)?;
+            let appended = queries::issue_log::append(&conn, id, source, &lines)?;
+            drop(conn);
+
+            if json {
+                print_json(&appended);
+            } else {
+                print!("{}", render::issue_log_appended(identifier, appended.len()));
+            }
+        }
+
+        IssueAction::Log {
+            action:
+                IssueLogAction::List {
+                    identifier,
+                    after,
+                    limit,
+                },
+        } => {
+            let conn = pool.read()?;
+            let id = queries::resolve_identifier(&conn, identifier)?;
+            let lines = queries::issue_log::list(
+                &conn,
+                id,
+                queries::issue_log::LogWindow {
+                    after: *after,
+                    before: None,
+                    limit: *limit,
+                },
+            )?;
+
+            if json {
+                print_json(&lines);
+            } else {
+                print!("{}", render::issue_log(&lines));
+            }
+        }
+
         IssueAction::Unlink { source, target } => {
             let conn = pool.write()?;
             let source_id = queries::resolve_identifier(&conn, source)?;
@@ -1416,6 +1464,69 @@ mod tests {
         run(&pool, &update(None, true), false, None).unwrap();
         assert_eq!(assignee(&pool), None);
         assert_eq!(listed("root"), 0);
+    }
+
+    #[test]
+    fn exec_issue_log_appends_and_lists_without_touching_the_issue() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        seed_issue(&pool, "TST", "Worked on");
+        let seq = pool
+            .read()
+            .unwrap()
+            .query_row("SELECT seq FROM issues", [], |r| r.get::<_, i64>(0));
+        let seq = seq.unwrap();
+        let log = |action| Command::Issue {
+            action: IssueAction::Log { action },
+        };
+        run(
+            &pool,
+            &log(IssueLogAction::Add {
+                identifier: "TST-1".into(),
+                source: "run-7".into(),
+                line: vec!["cloning".into(), "testing".into()],
+            }),
+            true,
+            None,
+        )
+        .unwrap();
+        for json in [true, false] {
+            run(
+                &pool,
+                &log(IssueLogAction::List {
+                    identifier: "TST-1".into(),
+                    after: None,
+                    limit: Some(1),
+                }),
+                json,
+                None,
+            )
+            .unwrap();
+        }
+        let conn = pool.read().unwrap();
+        let lines = queries::issue_log::list(&conn, 1, Default::default()).unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1].text, "testing");
+        assert_eq!(lines[1].source, "run-7");
+        assert_eq!(queries::get_issue(&conn, 1).unwrap().seq, seq);
+        assert_eq!(
+            render::issue_log(&lines[..1]),
+            format!("{:>6}  {}  [run-7] cloning\n", lines[0].id, lines[0].ts)
+        );
+        drop(conn);
+        assert!(
+            run(
+                &pool,
+                &log(IssueLogAction::Add {
+                    identifier: "TST-9".into(),
+                    source: String::new(),
+                    line: vec!["x".into()],
+                }),
+                false,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]
