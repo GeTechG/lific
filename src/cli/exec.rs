@@ -1210,6 +1210,39 @@ mod tests {
     }
 
     #[test]
+    fn exec_issue_update_accepts_in_review_and_names_it_on_a_bad_status() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        seed_issue(&pool, "TST", "Original");
+        let update = |status: &str| Command::Issue {
+            action: IssueAction::Update {
+                identifier: "TST-1".into(),
+                title: None,
+                description: None,
+                status: Some(status.into()),
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
+            },
+        };
+        run(&pool, &update("in_review"), false, None).unwrap();
+        {
+            let conn = pool.read().unwrap();
+            assert_eq!(
+                queries::get_issue(&conn, 1).unwrap().status,
+                Status::InReview
+            );
+        }
+        let error = run(&pool, &update("review"), false, None).unwrap_err();
+        assert!(
+            error.to_string().contains("in_review"),
+            "valid statuses are listed: {error}"
+        );
+    }
+
+    #[test]
     fn exec_issue_list_with_filters() {
         let pool = test_pool();
         seed_project(&pool, "TST");

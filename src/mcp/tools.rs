@@ -3192,7 +3192,7 @@ No issues found."
             groups.entry(key).or_default().push(issue);
         }
         // LIF-140: order columns by workflow rank, not alphabetically.
-        // Status flows backlog → todo → active → done → cancelled;
+        // Status flows backlog → todo → active → in_review → done → cancelled;
         // priority flows urgent → none. Module grouping stays
         // alphabetical (the BTreeMap order), which is what you want
         // for arbitrary names. Unknown keys sort after known ones.
@@ -3205,10 +3205,17 @@ No issues found."
             },
             "module" => |_| 0, // stable sort keeps alphabetical order
             _ => |k| {
-                ["backlog", "todo", "active", "done", "cancelled"]
-                    .iter()
-                    .position(|s| *s == k)
-                    .unwrap_or(usize::MAX)
+                [
+                    "backlog",
+                    "todo",
+                    "active",
+                    "in_review",
+                    "done",
+                    "cancelled",
+                ]
+                .iter()
+                .position(|s| *s == k)
+                .unwrap_or(usize::MAX)
             },
         };
         let mut ordered: Vec<(&String, &Vec<&models::Issue>)> = groups.iter().collect();
@@ -7280,7 +7287,14 @@ mod tests {
         let (m, _guard) = mcp();
         let _ag = first_admin_guard();
         seed_project(&m, "Board Order", "BRO");
-        for status in ["done", "active", "backlog", "todo", "cancelled"] {
+        for status in [
+            "done",
+            "active",
+            "in_review",
+            "backlog",
+            "todo",
+            "cancelled",
+        ] {
             m.create_issue(Parameters(CreateIssueInput {
                 project: Some("BRO".into()),
                 title: format!("issue {status}"),
@@ -7310,7 +7324,8 @@ mod tests {
         };
         assert!(pos("backlog") < pos("todo"), "got: {result}");
         assert!(pos("todo") < pos("active"), "got: {result}");
-        assert!(pos("active") < pos("done"), "got: {result}");
+        assert!(pos("active") < pos("in_review"), "got: {result}");
+        assert!(pos("in_review") < pos("done"), "got: {result}");
         assert!(pos("done") < pos("cancelled"), "got: {result}");
     }
 

@@ -777,7 +777,7 @@ pub enum IssueAction {
         #[arg(short, long)]
         project: String,
 
-        /// Filter by status: backlog, todo, active, done, cancelled
+        /// Filter by status: backlog, todo, active, in_review, done, cancelled
         #[arg(short, long)]
         status: Option<String>,
 
@@ -793,7 +793,7 @@ pub enum IssueAction {
         #[arg(short, long)]
         label: Option<String>,
 
-        /// Only show workable issues (no unresolved blockers)
+        /// Only show workable issues (open, not in review, no unresolved blockers)
         #[arg(short, long)]
         workable: bool,
 
@@ -822,7 +822,7 @@ pub enum IssueAction {
         #[arg(short, long, default_value = "")]
         description: String,
 
-        /// Status: backlog, todo, active, done, cancelled
+        /// Status: backlog, todo, active, in_review, done, cancelled
         #[arg(short, long, default_value = "backlog")]
         status: String,
 
@@ -852,7 +852,7 @@ pub enum IssueAction {
         #[arg(short, long)]
         description: Option<String>,
 
-        /// New status
+        /// New status: backlog, todo, active, in_review, done, cancelled
         #[arg(short, long)]
         status: Option<String>,
 

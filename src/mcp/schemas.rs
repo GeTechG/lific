@@ -38,7 +38,9 @@ pub struct ListIssuesInput {
         description = "Project ID (e.g. LIF); optional when the session is bound to a repository"
     )]
     pub project: Option<String>,
-    #[schemars(description = "Filter by status: backlog, todo, active, done, cancelled")]
+    #[schemars(
+        description = "Filter by status: backlog, todo, active, in_review, done, cancelled"
+    )]
     pub status: Option<String>,
     #[schemars(description = "Filter by priority: urgent, high, medium, low, none")]
     pub priority: Option<String>,
@@ -139,7 +141,9 @@ pub struct CreateIssueInput {
     pub title: String,
     #[schemars(description = "Markdown description")]
     pub description: Option<String>,
-    #[schemars(description = "Status: backlog, todo, active, done, cancelled (default: backlog)")]
+    #[schemars(
+        description = "Status: backlog, todo, active, in_review, done, cancelled (default: backlog)"
+    )]
     pub status: Option<String>,
     #[schemars(description = "Priority: urgent, high, medium, low, none (default: none)")]
     pub priority: Option<String>,
@@ -194,7 +198,7 @@ pub struct UpdateIssueInput {
     pub title: Option<String>,
     #[schemars(description = "New description (markdown)")]
     pub description: Option<String>,
-    #[schemars(description = "New status: backlog, todo, active, done, cancelled")]
+    #[schemars(description = "New status: backlog, todo, active, in_review, done, cancelled")]
     pub status: Option<String>,
     #[schemars(description = "New priority: urgent, high, medium, low, none")]
     pub priority: Option<String>,
@@ -225,7 +229,7 @@ pub struct BulkUpdateInput {
     pub project: String,
     // ── Filter (which issues to change; mirrors list_issues) ──
     #[schemars(
-        description = "Only affect issues with this status: backlog, todo, active, done, cancelled"
+        description = "Only affect issues with this status: backlog, todo, active, in_review, done, cancelled"
     )]
     pub filter_status: Option<String>,
     #[schemars(
@@ -237,7 +241,9 @@ pub struct BulkUpdateInput {
     #[schemars(description = "Only affect issues carrying this label (by name)")]
     pub filter_label: Option<String>,
     // ── Target (fields to set on every matching issue) ──
-    #[schemars(description = "New status to set: backlog, todo, active, done, cancelled")]
+    #[schemars(
+        description = "New status to set: backlog, todo, active, in_review, done, cancelled"
+    )]
     pub set_status: Option<String>,
     #[schemars(description = "New priority to set: urgent, high, medium, low, none")]
     pub set_priority: Option<String>,

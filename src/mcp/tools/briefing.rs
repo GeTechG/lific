@@ -184,12 +184,24 @@ impl LificMcp {
             since.as_deref(),
             input.pages.as_deref().unwrap_or_default(),
         )?;
-        let active = self.active_section(context, project.id, ident)?;
+        let active =
+            self.status_section(context, project.id, ident, models::Status::Active, "Active")?;
+        // Finished and waiting on a reviewer: listed so it is not lost, but
+        // kept out of `workable`, which is what to pick up.
+        let in_review = self.status_section(
+            context,
+            project.id,
+            ident,
+            models::Status::InReview,
+            "In review",
+        )?;
 
-        let mut sections: Vec<Section> = [changes, plans, due, blocked, workable, pages, active]
-            .into_iter()
-            .flatten()
-            .collect();
+        let mut sections: Vec<Section> = [
+            changes, plans, due, blocked, workable, pages, active, in_review,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         if sections.is_empty() {
             header.push_str("Nothing is planned, active, blocked or workable.\n");
         }
@@ -538,16 +550,18 @@ impl LificMcp {
         }))
     }
 
-    fn active_section(
+    fn status_section(
         &self,
         context: Option<&IssueLinkContext>,
         project_id: i64,
         ident: &str,
+        status: models::Status,
+        label: &str,
     ) -> Result<Option<Section>, String> {
         let (issues, total, total_is_floor) = self.briefing_issues(
             project_id,
             models::ListIssuesQuery {
-                status: Some(models::Status::Active),
+                status: Some(status),
                 ..Default::default()
             },
         )?;
@@ -555,7 +569,7 @@ impl LificMcp {
             return Ok(None);
         }
         Ok(Some(Section {
-            heading: format!("Active ({})", count(total, total_is_floor)),
+            heading: format!("{label} ({})", count(total, total_is_floor)),
             summary: None,
             lines: issues
                 .iter()
@@ -563,7 +577,7 @@ impl LificMcp {
                 .collect(),
             total,
             total_is_floor,
-            more: format!("list_issues(project='{ident}', status='active')"),
+            more: format!("list_issues(project='{ident}', status='{status}')"),
         }))
     }
 

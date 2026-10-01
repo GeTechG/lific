@@ -216,6 +216,21 @@ fn a_briefing_reports_every_section_with_its_items_since_the_cursor() {
     );
 }
 
+/// Work in review is listed in its own section, and is not offered as
+/// something to pick up.
+#[test]
+fn in_review_issues_get_their_own_section_and_leave_workable() {
+    let (m, _guard, _cursor) = seeded();
+    set_status(&m, "BRF-3", "in_review");
+    let out = briefing(&m, Some("BRF"), None, &[]);
+    let in_review = section(&out, "In review (1)");
+    assert!(
+        in_review.contains("- BRF-3 | in_review | urgent | Workable urgent"),
+        "{in_review}"
+    );
+    assert!(!section(&out, "Workable").contains("BRF-3"), "{out}");
+}
+
 #[test]
 fn without_since_there_are_no_changes_and_recent_pages_stand_in_for_named_ones() {
     let (m, _guard, _cursor) = seeded();

@@ -3000,6 +3000,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn moves_an_issue_to_in_review_and_lists_it_over_http() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let updated = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Update {
+                        identifier: fixture.issue_identifier.clone(),
+                        title: None,
+                        description: None,
+                        status: Some("in_review".into()),
+                        priority: None,
+                        module: None,
+                        labels: None,
+                        add_label: Vec::new(),
+                        remove_label: Vec::new(),
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated["status"], "in_review");
+
+        let list = |status: Option<&str>, workable| Command::Issue {
+            action: IssueAction::List {
+                project: "TST".into(),
+                status: status.map(str::to_string),
+                priority: None,
+                module: None,
+                label: None,
+                workable,
+                limit: None,
+            },
+        };
+        let in_review = backend
+            .execute(&list(Some("in_review"), false), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert_eq!(in_review.as_array().unwrap().len(), 1);
+        let workable = backend
+            .execute(&list(None, true), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert!(workable.as_array().unwrap().is_empty());
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
     async fn links_and_unlinks_issues_over_http_against_real_api_router() {
         let fixture = spawn_real_api_server().await;
         {
