@@ -100,6 +100,14 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
     }
 }
 
+/// [`scrub_issue`] for a row of the list replica: the same private fields,
+/// minus the ones that row never carries.
+fn scrub_issue_change(issue: &mut crate::db::models::IssueChange) {
+    issue.waits.clear();
+    issue.properties.clear();
+    issue.assignment = Default::default();
+}
+
 /// Keep the display name, drop the account behind it.
 pub fn scrub_comment(comment: &mut Comment) {
     comment.user_id = 0;
@@ -160,9 +168,7 @@ pub fn public_index(conn: &Connection, project: &Project) -> Result<IndexSnapsho
         )?
         .query_row(params![project.id], |row| row.get(0))?;
     let (mut issues, pages) = super::changes::index_rows(conn, project.id)?;
-    for issue in &mut issues {
-        issue.waits.clear();
-    }
+    issues.iter_mut().for_each(scrub_issue_change);
     Ok(IndexSnapshot {
         cursor,
         issues,
@@ -184,7 +190,7 @@ pub fn public_changes(
     let mut page = super::changes::list_changes(conn, project.id, since, limit)?;
     for change in &mut page.changes {
         if let Change::Issue(issue) = change {
-            issue.waits.clear();
+            scrub_issue_change(issue);
         }
     }
     page.changes.retain(|change| match change {
@@ -452,6 +458,35 @@ mod tests {
         let project = public_project(&conn, "pub").unwrap().expect("published");
         assert_eq!(project.identifier, "PUB");
         assert_eq!(project.lead_user_id, None, "the lead is account metadata");
+    }
+
+    #[test]
+    fn the_list_replica_hides_properties_and_the_assignee() {
+        let (db, public, _) = fixture();
+        {
+            let conn = db.write().unwrap();
+            super::super::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: public.id,
+                    title: "Carrier".into(),
+                    assignee: Some("owner".into()),
+                    set_properties: [("footprint".to_string(), "src/secret/".to_string())].into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let conn = db.read().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        let index = serde_json::to_string(&public_index(&tx, &public).unwrap().issues).unwrap();
+        let changes =
+            serde_json::to_string(&public_changes(&tx, &public, 0, 100).unwrap().changes).unwrap();
+        for body in [index, changes] {
+            assert!(body.contains("Carrier"), "{body}");
+            assert!(!body.contains("src/secret/"), "{body}");
+            assert!(!body.contains("owner"), "{body}");
+        }
     }
 
     #[test]
