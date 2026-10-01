@@ -85,6 +85,7 @@ pub fn fmt_status(status: Status) -> &'static str {
         Status::Backlog => "[ ] backlog",
         Status::Todo => "[.] todo",
         Status::Active => "[~] active",
+        Status::InReview => "[?] in_review",
         Status::Done => "[x] done",
         Status::Cancelled => "[-] cancelled",
     }
@@ -628,6 +629,7 @@ mod tests {
     #[test]
     fn marks_statuses_and_priorities_with_indicators() {
         assert_eq!(fmt_status(Status::Active), "[~] active");
+        assert_eq!(fmt_status(Status::InReview), "[?] in_review");
         assert_eq!(fmt_status(Status::Cancelled), "[-] cancelled");
         assert_eq!(fmt_priority(Priority::Urgent), "!!!  urgent");
         assert_eq!(fmt_priority(Priority::None), "     none");

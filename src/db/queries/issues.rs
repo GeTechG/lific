@@ -386,7 +386,8 @@ pub fn list_issues_page(
             .to_string(),
         );
         conditions.push(format!("NOT {holding_wait}"));
-        conditions.push("i.status NOT IN ('done', 'cancelled')".to_string());
+        // `in_review` is open but finished: nothing to pick up.
+        conditions.push("i.status NOT IN ('in_review', 'done', 'cancelled')".to_string());
     }
     if q.blocked == Some(true) {
         conditions.push(format!(
@@ -1350,8 +1351,13 @@ mod tests {
         let pool = test_db();
         let conn = pool.write().unwrap();
         let pid = seed_project(&conn, "TST");
-        // 2 backlog, 1 todo, 3 done; active/cancelled stay 0.
-        for (status, n) in [(Status::Backlog, 2), (Status::Todo, 1), (Status::Done, 3)] {
+        // 2 backlog, 1 todo, 1 in review, 3 done; active/cancelled stay 0.
+        for (status, n) in [
+            (Status::Backlog, 2),
+            (Status::Todo, 1),
+            (Status::InReview, 1),
+            (Status::Done, 3),
+        ] {
             for i in 0..n {
                 quick_issue(&conn, pid, &format!("{status} {i}"), status, Priority::None);
             }
@@ -1360,9 +1366,10 @@ mod tests {
         assert_eq!(counts.backlog, 2);
         assert_eq!(counts.todo, 1);
         assert_eq!(counts.active, 0);
+        assert_eq!(counts.in_review, 1);
         assert_eq!(counts.done, 3);
         assert_eq!(counts.cancelled, 0);
-        assert_eq!(counts.total, 6);
+        assert_eq!(counts.total, 7);
     }
 
     #[test]
@@ -1651,6 +1658,54 @@ mod tests {
         .unwrap();
         assert_eq!(workable.len(), 1);
         assert_eq!(workable[0].title, "Active");
+    }
+
+    /// `in_review` is open (it still blocks what it blocks) but is finished
+    /// work, so it is not itself offered as workable.
+    #[test]
+    fn in_review_is_not_workable_and_still_blocks_until_done() {
+        let pool = test_db();
+        let conn = pool.write().unwrap();
+        let pid = seed_project(&conn, "TST");
+        let blocker = quick_issue(&conn, pid, "Blocker", Status::InReview, Priority::None);
+        let blocked = quick_issue(&conn, pid, "Blocked", Status::Todo, Priority::None);
+        link_issues(&conn, blocker.id, blocked.id, "blocks").unwrap();
+        let workable = |conn: &Connection| {
+            list_issues(
+                conn,
+                &ListIssuesQuery {
+                    project_id: Some(pid),
+                    workable: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        assert!(workable(&conn).is_empty());
+        let in_review = list_issues(
+            &conn,
+            &ListIssuesQuery {
+                project_id: Some(pid),
+                status: Some(Status::InReview),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(in_review.len(), 1);
+        assert_eq!(in_review[0].title, "Blocker");
+
+        update_issue(
+            &conn,
+            blocker.id,
+            &UpdateIssue {
+                status: Some(Status::Done),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let released = workable(&conn);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].title, "Blocked");
     }
 
     #[test]

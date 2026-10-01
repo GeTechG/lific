@@ -281,6 +281,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "HWP attachment MIME",
         include_str!("../../migrations/057_hwp_attachment_mime.sql"),
     ),
+    (
+        58,
+        "issue status in_review",
+        include_str!("../../migrations/058_issue_status_in_review.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -309,7 +314,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// before its savepoint releases, and `run_inner` repeats the check
 /// batch-wide before commit to cover every other migration that ran while
 /// enforcement was off.
-const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57];
+const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57, 58];
 
 /// Highest migration version this binary knows how to apply. Used by
 /// `lific dump`/`restore` (LIF-266) to stamp and gate archives on schema
@@ -463,7 +468,8 @@ fn run_inner(conn: &Connection, fk_off: bool) -> Result<(), crate::error::LificE
             info!(version, name, "applying migration");
             let sp = format!("migrate_v{version}");
             crate::db::queries::savepoint(conn, &sp, || {
-                let triggers = if version == 50 {
+                // 50 and 58 rebuild tables that triggers are attached to.
+                let triggers = if matches!(version, 50 | 58) {
                     suspend_triggers(conn)?
                 } else {
                     Vec::new()
@@ -630,7 +636,7 @@ mod tests {
             if version >= stop {
                 break;
             }
-            let triggers = if version == 50 {
+            let triggers = if matches!(version, 50 | 58) {
                 suspend_triggers(&conn).unwrap()
             } else {
                 Vec::new()
@@ -920,6 +926,117 @@ mod tests {
             1,
             "the search triggers must be recreated"
         );
+    }
+
+    /// Migration 058 rebuilds `issues`, the parent of most of the schema.
+    /// Every old status, the children hanging off an issue, the search index
+    /// and the triggers all have to come through, and the widened CHECK has
+    /// to accept the new value while still rejecting unknown ones.
+    #[test]
+    fn in_review_rebuild_keeps_issues_children_triggers_and_search() {
+        let conn = migrated_up_to(58);
+        conn.execute_batch(
+            "INSERT INTO users(id,username,email,password_hash) VALUES(1,'before','before@test','hash');
+             INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title,status,source) VALUES
+                 (1,1,1,'In backlog','backlog',NULL),
+                 (2,1,2,'In todo','todo','github:1'),
+                 (3,1,3,'In active','active',NULL),
+                 (4,1,4,'In done','done',NULL),
+                 (5,1,5,'In cancelled','cancelled',NULL),
+                 (9,1,6,'Purged','todo',NULL);
+             INSERT INTO labels(id,project_id,name) VALUES(1,1,'bug');
+             INSERT INTO issue_labels(issue_id,label_id) VALUES(3,1);
+             INSERT INTO issue_relations(source_id,target_id,relation_type) VALUES(1,2,'blocks');
+             INSERT INTO comments(id,issue_id,user_id,content) VALUES(1,3,1,'Kept');
+             UPDATE issues SET deleted_at = datetime('now') WHERE id = 5;
+             DELETE FROM issues WHERE id = 9;",
+        )
+        .unwrap();
+        let rows = |conn: &Connection| -> Vec<(i64, String, String, i64, Option<String>, bool)> {
+            conn.prepare(
+                "SELECT id,title,status,seq,source,deleted_at IS NOT NULL FROM issues ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        let before = rows(&conn);
+        assert_eq!(before.len(), 5);
+        let triggers_before = count(
+            &conn,
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger'",
+        );
+
+        run(&conn).unwrap();
+
+        assert_eq!(rows(&conn), before);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
+            ),
+            triggers_before
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND tbl_name='issues' AND name LIKE 'idx_issues_%'"
+            ),
+            7
+        );
+        assert_eq!(count(&conn, "SELECT count(*) FROM issue_labels"), 1);
+        assert_eq!(count(&conn, "SELECT count(*) FROM issue_relations"), 1);
+        assert_eq!(count(&conn, "SELECT count(*) FROM comments"), 1);
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM pragma_foreign_key_check"),
+            0
+        );
+
+        // The widened CHECK, and the triggers that ride on a status change.
+        conn.execute("UPDATE issues SET status='in_review' WHERE id=3", [])
+            .expect("the widened CHECK accepts in_review");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM status_transitions WHERE issue_id=3 AND to_status='in_review'"
+            ),
+            1
+        );
+        assert!(
+            conn.execute("UPDATE issues SET status='shipped' WHERE id=3", [])
+                .is_err()
+        );
+        conn.execute("UPDATE issues SET title='Still indexed' WHERE id=1", [])
+            .unwrap();
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM search_index WHERE entity_type='issue' AND title='Still indexed'"
+            ),
+            1
+        );
+        // A purged id is never handed out again.
+        conn.execute(
+            "INSERT INTO issues(project_id,sequence,title) VALUES(1,7,'New')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(conn.last_insert_rowid(), 10);
+        // Children still cascade from the rebuilt parent.
+        conn.execute("DELETE FROM issues WHERE id=3", []).unwrap();
+        assert_eq!(count(&conn, "SELECT count(*) FROM issue_labels"), 0);
     }
 
     fn stored_checksum(conn: &Connection, version: i64) -> Option<String> {

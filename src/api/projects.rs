@@ -704,7 +704,13 @@ mod tests {
         let app = test_app();
         let (project_id, _) = seed_project(&app).await;
 
-        for (title, status) in [("A", "todo"), ("B", "active"), ("C", "todo"), ("D", "done")] {
+        for (title, status) in [
+            ("A", "todo"),
+            ("B", "active"),
+            ("C", "todo"),
+            ("D", "done"),
+            ("E", "in_review"),
+        ] {
             let body = serde_json::json!({
                 "project_id": project_id,
                 "title": title,
@@ -728,9 +734,10 @@ mod tests {
         assert_eq!(counts["backlog"], 0);
         assert_eq!(counts["todo"], 2);
         assert_eq!(counts["active"], 1);
+        assert_eq!(counts["in_review"], 1);
         assert_eq!(counts["done"], 1);
         assert_eq!(counts["cancelled"], 0);
-        assert_eq!(counts["total"], 4);
+        assert_eq!(counts["total"], 5);
     }
 
     #[tokio::test]

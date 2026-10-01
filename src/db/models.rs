@@ -110,18 +110,21 @@ pub struct AssignProjectGroup {
 /// by hand at every call site.
 ///
 /// String form matches that CHECK's values exactly
-/// ('backlog'/'todo'/'active'/'done'/'cancelled') via `FromSql`/`ToSql`, so
+/// ('backlog'/'todo'/'active'/'in_review'/'done'/'cancelled') via `FromSql`/`ToSql`, so
 /// `row.get::<_, Status>(..)` and `params![.., status]` work directly, and the
 /// serde representation is the same lowercase string the JSON API has always
 /// spoken.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Status {
     /// The default for a new issue, matching the old `default_status()`.
     #[default]
     Backlog,
     Todo,
     Active,
+    /// Work finished, waiting for review or merge. Still open: it blocks
+    /// what it blocks, but it is not offered as something to pick up.
+    InReview,
     Done,
     Cancelled,
 }
@@ -132,6 +135,7 @@ impl Status {
             Status::Backlog => "backlog",
             Status::Todo => "todo",
             Status::Active => "active",
+            Status::InReview => "in_review",
             Status::Done => "done",
             Status::Cancelled => "cancelled",
         }
@@ -164,10 +168,11 @@ impl std::str::FromStr for Status {
             "backlog" => Ok(Status::Backlog),
             "todo" => Ok(Status::Todo),
             "active" => Ok(Status::Active),
+            "in_review" => Ok(Status::InReview),
             "done" => Ok(Status::Done),
             "cancelled" => Ok(Status::Cancelled),
             other => Err(format!(
-                "invalid status '{other}'. Use backlog, todo, active, done, or cancelled."
+                "invalid status '{other}'. Use backlog, todo, active, in_review, done, or cancelled."
             )),
         }
     }
@@ -505,6 +510,7 @@ pub struct IssueStatusCounts {
     pub backlog: i64,
     pub todo: i64,
     pub active: i64,
+    pub in_review: i64,
     pub done: i64,
     pub cancelled: i64,
     pub total: i64,
@@ -525,6 +531,7 @@ impl IssueStatusCounts {
             Status::Backlog => self.backlog,
             Status::Todo => self.todo,
             Status::Active => self.active,
+            Status::InReview => self.in_review,
             Status::Done => self.done,
             Status::Cancelled => self.cancelled,
         }
@@ -535,6 +542,7 @@ impl IssueStatusCounts {
             Status::Backlog => &mut self.backlog,
             Status::Todo => &mut self.todo,
             Status::Active => &mut self.active,
+            Status::InReview => &mut self.in_review,
             Status::Done => &mut self.done,
             Status::Cancelled => &mut self.cancelled,
         }
@@ -1753,10 +1761,11 @@ mod tests {
     use super::*;
     use rusqlite::types::{FromSql, ToSql, ValueRef};
 
-    const STATUSES: [Status; 5] = [
+    const STATUSES: [Status; 6] = [
         Status::Backlog,
         Status::Todo,
         Status::Active,
+        Status::InReview,
         Status::Done,
         Status::Cancelled,
     ];
@@ -1802,7 +1811,7 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE t (
                  status TEXT NOT NULL
-                     CHECK(status IN ('backlog','todo','active','done','cancelled')),
+                     CHECK(status IN ('backlog','todo','active','in_review','done','cancelled')),
                  priority TEXT NOT NULL
                      CHECK(priority IN ('urgent','high','medium','low','none'))
              )",
@@ -1846,7 +1855,7 @@ mod tests {
     fn parsing_an_unknown_value_names_the_valid_ones() {
         assert_eq!(
             "shipped".parse::<Status>().unwrap_err(),
-            "invalid status 'shipped'. Use backlog, todo, active, done, or cancelled."
+            "invalid status 'shipped'. Use backlog, todo, active, in_review, done, or cancelled."
         );
         assert_eq!(
             "critical".parse::<Priority>().unwrap_err(),
@@ -1896,5 +1905,6 @@ mod tests {
         assert!(!Status::Backlog.is_closed());
         assert!(!Status::Todo.is_closed());
         assert!(!Status::Active.is_closed());
+        assert!(!Status::InReview.is_closed());
     }
 }

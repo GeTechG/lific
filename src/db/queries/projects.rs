@@ -77,7 +77,7 @@ pub fn project_agent_stats(
         "WITH workable AS (
              SELECT i.project_id, COUNT(*) AS count
              FROM issues i
-             WHERE i.status NOT IN ('done', 'cancelled')
+             WHERE i.status NOT IN ('in_review', 'done', 'cancelled')
                AND i.deleted_at IS NULL
                AND NOT EXISTS (
                    SELECT 1 FROM issue_relations ir
