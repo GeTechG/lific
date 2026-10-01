@@ -32,7 +32,7 @@ use super::weblinks::{
 };
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
-    PageAction, ProjectAction, owned_labels, render,
+    PageAction, ProjectAction, edited_labels, owned_labels, render,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -481,6 +481,8 @@ impl HttpBackend {
                 priority,
                 module,
                 labels,
+                add_label,
+                remove_label,
             } => {
                 let id = self.issue_id(identifier).await?;
                 let module_id = match module {
@@ -489,6 +491,18 @@ impl HttpBackend {
                         Some(self.module_id(project_id, module).await?)
                     }
                     None => None,
+                };
+                // `--add-label` / `--remove-label`: the API only replaces the
+                // whole set, so read it, edit it, and send `expected_seq` so a
+                // concurrent write is refused instead of silently overwritten.
+                let (labels, expected_seq) = if add_label.is_empty() && remove_label.is_empty() {
+                    (owned_labels(labels.as_deref()), None)
+                } else {
+                    let current: models::Issue =
+                        decode(&self.get_json(&format!("/api/issues/{id}"), &[]).await?)
+                            .ok_or_else(|| anyhow!("unexpected issue response from server"))?;
+                    let edited = edited_labels(&current.labels, add_label, remove_label);
+                    (edited, Some(current.seq))
                 };
                 let body = models::UpdateIssue {
                     title: title.clone(),
@@ -502,10 +516,10 @@ impl HttpBackend {
                     sort_order: None,
                     start_date: None,
                     target_date: None,
-                    labels: owned_labels(labels.as_deref()),
-                    // LIF-441: the CLI has no read-modify-write cycle to
-                    // guard, so it stays on last-writer-wins.
-                    expected_seq: None,
+                    labels,
+                    // LIF-441: only the label edits above read before they
+                    // write; everything else stays on last-writer-wins.
+                    expected_seq,
                     // See the create path: server-side, never sent.
                     ..Default::default()
                 };
@@ -2895,6 +2909,69 @@ mod tests {
 
         assert_eq!(issue["title"], "Test issue");
         assert_eq!(issue["identifier"], "TST-1");
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn edits_single_issue_labels_over_http_against_real_api_router() {
+        let fixture = spawn_real_api_server().await;
+        {
+            let conn = fixture.db.write().unwrap();
+            for name in ["bug", "needs-human", "fresh"] {
+                crate::db::queries::create_label(
+                    &conn,
+                    &models::CreateLabel {
+                        project_id: 1,
+                        name: name.into(),
+                        color: "#EF4444".into(),
+                    },
+                )
+                .unwrap();
+            }
+            crate::db::queries::update_issue(
+                &conn,
+                1,
+                &models::UpdateIssue {
+                    labels: Some(vec!["bug".into(), "needs-human".into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let update = |add: &[&str], remove: &[&str]| Command::Issue {
+            action: IssueAction::Update {
+                identifier: fixture.issue_identifier.clone(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: add.iter().map(|v| (*v).to_string()).collect(),
+                remove_label: remove.iter().map(|v| (*v).to_string()).collect(),
+            },
+        };
+        let labels = |issue: serde_json::Value| {
+            let mut labels: Vec<String> = serde_json::from_value(issue["labels"].clone()).unwrap();
+            labels.sort();
+            labels
+        };
+
+        let added = backend
+            .execute(&update(&["fresh", "bug"], &[]), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert_eq!(labels(added), ["bug", "fresh", "needs-human"]);
+
+        let removed = backend
+            .execute(
+                &update(&[], &["needs-human", "absent"]),
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(labels(removed), ["bug", "fresh"]);
         fixture.server.abort();
     }
 

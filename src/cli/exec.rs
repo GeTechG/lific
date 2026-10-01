@@ -335,6 +335,8 @@ fn issue(
             priority,
             module,
             labels,
+            add_label,
+            remove_label,
         } => {
             let conn = pool.write()?;
             let id = queries::resolve_identifier(&conn, identifier)?;
@@ -347,7 +349,16 @@ fn issue(
                 None
             };
 
-            let label_list = owned_labels(labels.as_deref());
+            // `--add-label` / `--remove-label` edit the set the issue carries
+            // now. `expected_seq` refuses the write if another process (a
+            // running server) changed the issue since that read.
+            let (label_list, expected_seq) = if add_label.is_empty() && remove_label.is_empty() {
+                (owned_labels(labels.as_deref()), None)
+            } else {
+                let current = queries::get_issue(&conn, id)?;
+                let edited = edited_labels(&current.labels, add_label, remove_label);
+                (edited, Some(current.seq))
+            };
 
             let issue = queries::update_issue(
                 &conn,
@@ -361,6 +372,7 @@ fn issue(
                     // skips (no clear), so map Some(id) -> Some(Some(id)).
                     module_id: module_id.map(Some),
                     labels: label_list,
+                    expected_seq,
                     // LIF-409: see `issue create`. An edit that drops a
                     // reference drops its link, same as every other backend.
                     attachments: AttachmentActor::TrustedLocal,
@@ -1152,6 +1164,8 @@ mod tests {
                 priority: None,
                 module: None,
                 labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1651,6 +1665,76 @@ mod tests {
         assert!(issue.labels.contains(&"urgent".to_string()));
     }
 
+    fn update_labels(pool: &DbPool, add: &[&str], remove: &[&str]) -> Vec<String> {
+        let owned = |values: &[&str]| values.iter().map(|v| (*v).to_string()).collect();
+        let cmd = Command::Issue {
+            action: IssueAction::Update {
+                identifier: "TST-1".into(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: owned(add),
+                remove_label: owned(remove),
+            },
+        };
+        run(pool, &cmd, false, None).unwrap();
+        let conn = pool.read().unwrap();
+        let id = queries::resolve_identifier(&conn, "TST-1").unwrap();
+        queries::get_issue(&conn, id).unwrap().labels
+    }
+
+    #[test]
+    fn exec_issue_update_adds_and_removes_single_labels() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        {
+            let conn = pool.write().unwrap();
+            let pid = queries::resolve_project_identifier(&conn, "TST").unwrap();
+            for name in ["bug", "needs-human", "fresh"] {
+                queries::create_label(
+                    &conn,
+                    &CreateLabel {
+                        project_id: pid,
+                        name: name.into(),
+                        color: "#EF4444".into(),
+                    },
+                )
+                .unwrap();
+            }
+            queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: pid,
+                    title: "Labeled".into(),
+                    labels: vec!["bug".into(), "needs-human".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        let mut labels = update_labels(&pool, &["fresh"], &[]);
+        labels.sort();
+        assert_eq!(labels, ["bug", "fresh", "needs-human"]);
+
+        // Adding what is there and removing what is not both succeed quietly.
+        let mut labels = update_labels(&pool, &["bug"], &["absent"]);
+        labels.sort();
+        assert_eq!(labels, ["bug", "fresh", "needs-human"]);
+
+        let mut labels = update_labels(&pool, &[], &["needs-human"]);
+        labels.sort();
+        assert_eq!(labels, ["bug", "fresh"]);
+
+        // A name the project does not have is skipped, as `--labels` skips it.
+        let mut labels = update_labels(&pool, &["no-such-label"], &[]);
+        labels.sort();
+        assert_eq!(labels, ["bug", "fresh"]);
+    }
+
     #[test]
     fn exec_json_output_parses() {
         let pool = test_pool();
@@ -1773,6 +1857,8 @@ mod tests {
                     priority: None,
                     module: None,
                     labels: None,
+                    add_label: Vec::new(),
+                    remove_label: Vec::new(),
                 },
             },
             false,
@@ -1797,6 +1883,8 @@ mod tests {
                     priority: None,
                     module: None,
                     labels: None,
+                    add_label: Vec::new(),
+                    remove_label: Vec::new(),
                 },
             },
             false,

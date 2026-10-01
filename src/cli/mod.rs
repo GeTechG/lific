@@ -54,6 +54,36 @@ pub(super) fn owned_labels(value: Option<&str>) -> Option<Vec<String>> {
     value.map(|value| split_csv(value).map(str::to_owned).collect())
 }
 
+/// Apply `--add-label` / `--remove-label` to the labels an issue carries now.
+///
+/// `None` means the set is unchanged, so the caller leaves `labels` off the
+/// update: the server replaces the whole set whenever it is sent, and an
+/// unchanged set would still be detached and re-attached in the audit log.
+/// A name in both lists is removed.
+#[must_use = "use the edited label set"]
+pub(super) fn edited_labels(
+    current: &[String],
+    add: &[String],
+    remove: &[String],
+) -> Option<Vec<String>> {
+    let names = |values: &[String]| -> Vec<String> {
+        values
+            .iter()
+            .flat_map(|value| split_csv(value))
+            .map(str::to_owned)
+            .collect()
+    };
+    let remove = names(remove);
+    let mut labels = current.to_vec();
+    for name in names(add) {
+        if !labels.contains(&name) {
+            labels.push(name);
+        }
+    }
+    labels.retain(|name| !remove.contains(name));
+    (labels != current).then_some(labels)
+}
+
 /// Whether `--url` was typed for `lific mcp`, rather than arriving from
 /// `LIFIC_URL`.
 ///
@@ -837,6 +867,26 @@ pub enum IssueAction {
         /// Replace labels (comma-separated)
         #[arg(short, long)]
         labels: Option<String>,
+
+        /// Add a label, keeping the others (repeatable or comma-separated).
+        /// Already present is a no-op. Cannot be combined with --labels
+        #[arg(
+            long,
+            value_name = "NAME",
+            value_delimiter = ',',
+            conflicts_with = "labels"
+        )]
+        add_label: Vec<String>,
+
+        /// Remove a label, keeping the others (repeatable or comma-separated).
+        /// Not present is a no-op. Cannot be combined with --labels
+        #[arg(
+            long,
+            value_name = "NAME",
+            value_delimiter = ',',
+            conflicts_with = "labels"
+        )]
+        remove_label: Vec<String>,
     },
 }
 
@@ -1422,6 +1472,33 @@ mod tests {
             Some(vec!["bug".to_owned(), "urgent".to_owned()])
         );
         assert_eq!(owned_labels(None), None);
+    }
+
+    #[test]
+    fn edited_labels_add_and_remove_without_touching_the_rest() {
+        let current = vec!["bug".to_string(), "needs-human".to_string()];
+        let names = |values: &[&str]| values.iter().map(|v| (*v).to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            edited_labels(&current, &names(&["fresh", " urgent "]), &[]),
+            Some(names(&["bug", "needs-human", "fresh", "urgent"]))
+        );
+        assert_eq!(
+            edited_labels(&current, &[], &names(&["bug"])),
+            Some(names(&["needs-human"]))
+        );
+        assert_eq!(
+            edited_labels(&current, &names(&["fresh"]), &names(&["fresh", "bug"])),
+            Some(names(&["needs-human"]))
+        );
+    }
+
+    #[test]
+    fn edited_labels_report_no_change_for_present_adds_and_absent_removes() {
+        let current = vec!["bug".to_string()];
+        assert_eq!(edited_labels(&current, &["bug".into()], &[]), None);
+        assert_eq!(edited_labels(&current, &[], &["absent".into()]), None);
+        assert_eq!(edited_labels(&current, &[], &[]), None);
     }
 
     #[test]
@@ -2654,6 +2731,51 @@ mod tests {
                 assert!(title.is_none());
             }
             _ => panic!("expected Issue Update"),
+        }
+    }
+
+    #[test]
+    fn parse_issue_update_label_edits_repeat_and_split_on_commas() {
+        let cli = Cli::try_parse_from([
+            "lific",
+            "issue",
+            "update",
+            "LIF-42",
+            "--add-label",
+            "bug,urgent",
+            "--add-label",
+            "fresh",
+            "--remove-label",
+            "stale",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Issue {
+                action:
+                    IssueAction::Update {
+                        add_label,
+                        remove_label,
+                        labels,
+                        ..
+                    },
+            } => {
+                assert_eq!(add_label, ["bug", "urgent", "fresh"]);
+                assert_eq!(remove_label, ["stale"]);
+                assert!(labels.is_none());
+            }
+            _ => panic!("expected Issue Update"),
+        }
+    }
+
+    #[test]
+    fn issue_update_rejects_label_edits_combined_with_replacement() {
+        for flag in ["--add-label", "--remove-label"] {
+            let error = Cli::try_parse_from([
+                "lific", "issue", "update", "LIF-42", "--labels", "bug", flag, "fresh",
+            ])
+            .err()
+            .expect("combining --labels with a label edit must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
     }
 
