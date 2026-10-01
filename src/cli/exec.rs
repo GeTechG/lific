@@ -289,7 +289,9 @@ fn issue(
             priority,
             module,
             labels,
+            set,
         } => {
+            let set_properties = parsed_property_sets(set)?;
             let conn = pool.write()?;
             let project_id = queries::resolve_project_identifier(&conn, project)?;
 
@@ -310,6 +312,7 @@ fn issue(
                     priority: priority.parse()?,
                     module_id,
                     labels: label_list,
+                    set_properties,
                     // LIF-409: the description's attachment references are
                     // linked by `create_issue` itself. A direct-SQL caller is
                     // past every gate already, so every reference that names a
@@ -337,7 +340,10 @@ fn issue(
             labels,
             add_label,
             remove_label,
+            set,
+            unset,
         } => {
+            let set_properties = parsed_property_sets(set)?;
             let conn = pool.write()?;
             let id = queries::resolve_identifier(&conn, identifier)?;
 
@@ -372,6 +378,9 @@ fn issue(
                     // skips (no clear), so map Some(id) -> Some(Some(id)).
                     module_id: module_id.map(Some),
                     labels: label_list,
+                    // A server-side delta: no read, no `expected_seq`.
+                    set_properties,
+                    unset_properties: unset.clone(),
                     expected_seq,
                     // LIF-409: see `issue create`. An edit that drops a
                     // reference drops its link, same as every other backend.
@@ -1168,6 +1177,7 @@ mod tests {
                 priority: "high".into(),
                 module: None,
                 labels: None,
+                set: Vec::new(),
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1198,6 +1208,8 @@ mod tests {
                 labels: None,
                 add_label: Vec::new(),
                 remove_label: Vec::new(),
+                set: Vec::new(),
+                unset: Vec::new(),
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1225,6 +1237,8 @@ mod tests {
                 labels: None,
                 add_label: Vec::new(),
                 remove_label: Vec::new(),
+                set: Vec::new(),
+                unset: Vec::new(),
             },
         };
         run(&pool, &update("in_review"), false, None).unwrap();
@@ -1240,6 +1254,63 @@ mod tests {
             error.to_string().contains("in_review"),
             "valid statuses are listed: {error}"
         );
+    }
+
+    #[test]
+    fn exec_issue_properties_are_set_on_create_and_edited_by_delta() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        let owned = |values: &[&str]| values.iter().map(|v| (*v).to_string()).collect();
+        let create = Command::Issue {
+            action: IssueAction::Create {
+                project: "TST".into(),
+                title: "Carrier".into(),
+                description: String::new(),
+                status: "backlog".into(),
+                priority: "none".into(),
+                module: None,
+                labels: None,
+                set: owned(&["footprint=src/a.js, test/", "pr=41"]),
+            },
+        };
+        run(&pool, &create, false, None).unwrap();
+        let update = |set: &[&str], unset: &[&str]| Command::Issue {
+            action: IssueAction::Update {
+                identifier: "TST-1".into(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
+                set: owned(set),
+                unset: owned(unset),
+            },
+        };
+        run(
+            &pool,
+            &update(&["footprint=src/b.js"], &["pr", "absent"]),
+            false,
+            None,
+        )
+        .unwrap();
+        let properties = |pool: &DbPool| {
+            let conn = pool.read().unwrap();
+            queries::get_issue(&conn, 1).unwrap().properties
+        };
+        assert_eq!(
+            properties(&pool),
+            [("footprint".to_string(), "src/b.js".to_string())].into()
+        );
+
+        for bad in ["Bad Name=v", "empty=", "no-equals"] {
+            let error = run(&pool, &update(&[bad], &[]), false, None).unwrap_err();
+            assert!(!error.to_string().is_empty(), "{bad}");
+        }
+        assert!(run(&pool, &update(&[], &["Bad Name"]), false, None).is_err());
+        assert_eq!(properties(&pool).len(), 1, "a refused edit changes nothing");
     }
 
     #[test]
@@ -1718,6 +1789,7 @@ mod tests {
                 priority: "none".into(),
                 module: None,
                 labels: Some("bug,urgent".into()),
+                set: Vec::new(),
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1743,6 +1815,8 @@ mod tests {
                 labels: None,
                 add_label: owned(add),
                 remove_label: owned(remove),
+                set: Vec::new(),
+                unset: Vec::new(),
             },
         };
         run(pool, &cmd, false, None).unwrap();
@@ -1940,6 +2014,7 @@ mod tests {
                     priority: "none".into(),
                     module: None,
                     labels: None,
+                    set: Vec::new(),
                 },
             },
             false,
@@ -1972,6 +2047,8 @@ mod tests {
                     labels: None,
                     add_label: Vec::new(),
                     remove_label: Vec::new(),
+                    set: Vec::new(),
+                    unset: Vec::new(),
                 },
             },
             false,
@@ -1998,6 +2075,8 @@ mod tests {
                     labels: None,
                     add_label: Vec::new(),
                     remove_label: Vec::new(),
+                    set: Vec::new(),
+                    unset: Vec::new(),
                 },
             },
             false,
@@ -2168,6 +2247,7 @@ mod tests {
                     priority: "none".into(),
                     module: None,
                     labels: None,
+                    set: Vec::new(),
                 },
             },
             false,

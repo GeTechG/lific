@@ -32,7 +32,7 @@ use super::weblinks::{
 };
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
-    PageAction, ProjectAction, edited_labels, owned_labels, render,
+    PageAction, ProjectAction, edited_labels, owned_labels, parsed_property_sets, render,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -456,7 +456,9 @@ impl HttpBackend {
                 priority,
                 module,
                 labels,
+                set,
             } => {
+                let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
                 let project_id = self.project_id(project).await?;
                 let module_id = match module {
                     Some(module) => Some(self.module_id(project_id, module).await?),
@@ -472,6 +474,7 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels: owned_labels(labels.as_deref()).unwrap_or_default(),
+                    set_properties,
                     source: None,
                     // Never serialized; the server names its own actor from
                     // the authenticated caller (LIF-409).
@@ -489,7 +492,10 @@ impl HttpBackend {
                 labels,
                 add_label,
                 remove_label,
+                set,
+                unset,
             } => {
+                let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
                 let id = self.issue_id(identifier).await?;
                 let module_id = match module {
                     Some(module) => {
@@ -523,6 +529,9 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels,
+                    // A server-side delta: no read, no `expected_seq`.
+                    set_properties,
+                    unset_properties: unset.clone(),
                     // LIF-441: only the label edits above read before they
                     // write; everything else stays on last-writer-wins.
                     expected_seq,
@@ -2974,6 +2983,8 @@ mod tests {
                 labels: None,
                 add_label: add.iter().map(|v| (*v).to_string()).collect(),
                 remove_label: remove.iter().map(|v| (*v).to_string()).collect(),
+                set: Vec::new(),
+                unset: Vec::new(),
             },
         };
         let labels = |issue: serde_json::Value| {
@@ -3016,6 +3027,8 @@ mod tests {
                         labels: None,
                         add_label: Vec::new(),
                         remove_label: Vec::new(),
+                        set: Vec::new(),
+                        unset: Vec::new(),
                     },
                 },
                 IssueLinkOutput::Url,
@@ -3045,6 +3058,100 @@ mod tests {
             .await
             .unwrap();
         assert!(workable.as_array().unwrap().is_empty());
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn sets_and_unsets_issue_properties_over_http_without_reading_first() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let owned = |values: &[&str]| values.iter().map(|v| (*v).to_string()).collect();
+        let created = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Create {
+                        project: "TST".into(),
+                        title: "Carrier".into(),
+                        description: String::new(),
+                        status: "backlog".into(),
+                        priority: "none".into(),
+                        module: None,
+                        labels: None,
+                        set: owned(&["footprint=src/a.js, test/", "pr=41"]),
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            created["properties"],
+            json!({"footprint": "src/a.js, test/", "pr": "41"})
+        );
+        let identifier = created["identifier"].as_str().unwrap().to_owned();
+        let update = |set: &[&str], unset: &[&str]| Command::Issue {
+            action: IssueAction::Update {
+                identifier: identifier.clone(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
+                set: owned(set),
+                unset: owned(unset),
+            },
+        };
+        let updated = backend
+            .execute(
+                &update(&["footprint=src/b.js"], &["pr", "absent"]),
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated["properties"], json!({"footprint": "src/b.js"}));
+
+        let listed = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::List {
+                        project: "TST".into(),
+                        status: None,
+                        priority: None,
+                        module: None,
+                        label: None,
+                        workable: false,
+                        limit: None,
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        let carrier = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["identifier"] == identifier.as_str())
+            .unwrap();
+        assert_eq!(carrier["properties"], json!({"footprint": "src/b.js"}));
+
+        let refused = backend
+            .execute(&update(&["Bad Name=v"], &[]), IssueLinkOutput::Url)
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("invalid property name"),
+            "{refused}"
+        );
+        assert!(
+            backend
+                .execute(&update(&["no-equals"], &[]), IssueLinkOutput::Url)
+                .await
+                .is_err()
+        );
         fixture.server.abort();
     }
 

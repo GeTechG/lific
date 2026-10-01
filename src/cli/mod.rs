@@ -84,6 +84,25 @@ pub(super) fn edited_labels(
     (labels != current).then_some(labels)
 }
 
+/// Parse repeated `--set NAME=VALUE` flags into the map `set_properties`
+/// carries. The value is everything after the first `=`, so it may itself
+/// contain `=` and commas. Names and values are validated where they are
+/// stored, the same for both backends.
+pub(super) fn parsed_property_sets(
+    sets: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut parsed = std::collections::BTreeMap::new();
+    for entry in sets {
+        let (name, value) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("invalid --set '{entry}'. Use NAME=VALUE."))?;
+        if parsed.insert(name.to_owned(), value.to_owned()).is_some() {
+            return Err(format!("property '{name}' is set more than once"));
+        }
+    }
+    Ok(parsed)
+}
+
 /// Whether `--url` was typed for `lific mcp`, rather than arriving from
 /// `LIFIC_URL`.
 ///
@@ -837,6 +856,10 @@ pub enum IssueAction {
         /// Labels to attach (comma-separated)
         #[arg(short, long)]
         labels: Option<String>,
+
+        /// Set a text property (repeatable), e.g. --set footprint="src/a.js, test/"
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
     },
 
     /// Update an existing issue
@@ -887,6 +910,15 @@ pub enum IssueAction {
             conflicts_with = "labels"
         )]
         remove_label: Vec<String>,
+
+        /// Set a text property, keeping the others (repeatable),
+        /// e.g. --set footprint="src/a.js, test/"
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
+
+        /// Remove a text property (repeatable). Not present is a no-op
+        #[arg(long = "unset", value_name = "NAME")]
+        unset: Vec<String>,
     },
 
     /// Relate two issues. With the default type, SOURCE blocks TARGET
@@ -2737,6 +2769,53 @@ mod tests {
             }
             _ => panic!("expected Issue Create"),
         }
+    }
+
+    #[test]
+    fn parse_issue_property_flags() {
+        let cli = Cli::try_parse_from([
+            "lific",
+            "issue",
+            "update",
+            "LIF-42",
+            "--set",
+            "footprint=src/a.js, test/",
+            "--set",
+            "note=a=b",
+            "--unset",
+            "pr",
+            "--unset",
+            "old",
+        ])
+        .unwrap();
+        let Command::Issue {
+            action: IssueAction::Update { set, unset, .. },
+        } = cli.command
+        else {
+            panic!("expected Issue Update");
+        };
+        assert_eq!(unset, ["pr", "old"]);
+        let parsed = parsed_property_sets(&set).unwrap();
+        assert_eq!(parsed["footprint"], "src/a.js, test/");
+        assert_eq!(parsed["note"], "a=b", "only the first '=' splits");
+
+        assert_eq!(
+            parsed_property_sets(&["footprint".into()]).unwrap_err(),
+            "invalid --set 'footprint'. Use NAME=VALUE."
+        );
+        assert!(parsed_property_sets(&["a=1".into(), "a=2".into()]).is_err());
+
+        let cli = Cli::try_parse_from([
+            "lific", "issue", "create", "-p", "LIF", "-t", "New", "--set", "pr=41",
+        ])
+        .unwrap();
+        let Command::Issue {
+            action: IssueAction::Create { set, .. },
+        } = cli.command
+        else {
+            panic!("expected Issue Create");
+        };
+        assert_eq!(set, ["pr=41"]);
     }
 
     #[test]
