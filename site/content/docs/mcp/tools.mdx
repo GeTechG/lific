@@ -34,7 +34,7 @@ On an unbound session these calls fail with `project required (this session has 
 
 ### `list_issues`
 
-Lists issues in one project, or across the projects of the people you name with `members`, filtered and paged. Each row shows the identifier, status, priority, title, labels and module, then any waits and checklist progress.
+Lists issues in one project, or across the projects of the people you name with `members`, filtered and paged. Each row shows the identifier, status, priority, title, labels, module and `@assignee`, then any waits and checklist progress.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -44,6 +44,7 @@ Lists issues in one project, or across the projects of the people you name with 
 | `priority` | `string` | No | `urgent`, `high`, `medium`, `low` or `none`. |
 | `module` | `string` | No | Module name. |
 | `label` | `string` | No | Label name. |
+| `assignee` | `string` | No | Username of the [assignee](/docs/concepts/issues#assignee). |
 | `workable` | `boolean` | No | `true` returns open issues that are not `in_review` (so not `done` or `cancelled` either) whose blockers are all `done` and that have no wait still holding. |
 | `blocked` | `boolean` | No | `true` returns issues with at least one blocker that is not `done`, or a wait still holding, whatever their own status. Each row lists its open blockers as `blocked_by:APP-3,APP-7`. |
 | `created_since` | `string` | No | ISO date or datetime, inclusive, e.g. `2026-06-01`. |
@@ -96,7 +97,7 @@ With `members`, the listing matches the web home page's "My active issues": `act
 
 ### `get_issue`
 
-Returns one issue: title, status, priority, module, labels, properties (one `Property name: value` line each), checklist progress, relations, waits, description and a window of its comments.
+Returns one issue: title, status, priority, module, labels, assignee, properties (one `Property name: value` line each), checklist progress, relations, waits, description and a window of its comments.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -134,6 +135,7 @@ Creates an issue, or up to 50 at once, and returns the new identifiers.
 | `start_date` | `string` | No | ISO 8601 date, e.g. `2026-06-01`. |
 | `target_date` | `string` | No | ISO 8601 date, e.g. `2026-06-15`. |
 | `set_properties` | `object` | No | Text [properties](/docs/concepts/issues#properties) to set, as `{name: value}`. |
+| `assignee` | `string` | No | Username of the [assignee](/docs/concepts/issues#assignee). |
 | `issues` | `object[]` | No | A batch of 1 to 50 issues. Each item takes `title` (required) and any of the fields above except `project`. |
 
 Attachment links (`/api/attachments/12`) in the description are linked to the new issue.
@@ -159,6 +161,7 @@ Changes the fields you pass and leaves the rest alone. Text fields are replaced 
 | `target_date` | `string` | No | ISO 8601 date. |
 | `set_properties` | `object` | No | Text [properties](/docs/concepts/issues#properties) to set, as `{name: value}`. Properties not named are kept. |
 | `unset_properties` | `string[]` | No | Property names to remove. A name the issue lacks is ignored. |
+| `assignee` | `string` | No | Username of the new [assignee](/docs/concepts/issues#assignee). An empty string `""` unassigns. |
 | `expected_seq` | `integer` | No | Concurrency check. The update is refused if the issue's `seq` is no longer this value. Omit for last-writer-wins. |
 | `evidence` | `string` | No | How the work was verified, in Markdown. Only with `status: "done"` on an issue that is not already done. Saved as a verification comment. |
 

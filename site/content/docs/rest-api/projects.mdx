@@ -182,6 +182,10 @@ Returns:
 
 People who can be `@`-mentioned in the project's comments: `user_id`, `username` and `display_name`. **Viewer.** With enforcement on, only the project's members; otherwise every user.
 
+### GET `/api/projects/{id}/assignees`
+
+Accounts an issue of the project can be [assigned](/docs/concepts/issues#assignee) to: `username`, `display_name` and `is_bot`. **Viewer.** Active members and administrators, then the agents they own.
+
 ## Activity
 
 The activity log records who changed what, through which interface. The per-issue, per-page and per-plan feeds are on [Issues, pages and plans](/docs/rest-api/work#activity).

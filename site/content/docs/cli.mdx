@@ -314,7 +314,7 @@ lific project update <IDENTIFIER> [--name <NAME>] [--description <TEXT>]
 ### issue
 
 ```shell
-lific issue list --project <PROJECT> [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--label <LABEL>] [--workable] [--limit <LIMIT>]
+lific issue list --project <PROJECT> [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--label <LABEL>] [--assignee <USERNAME>] [--workable] [--limit <LIMIT>]
 lific issue get <IDENTIFIER>
 lific issue create --project <PROJECT> --title <TITLE> [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>]
 lific issue update <IDENTIFIER> [--title <TITLE>] [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>] [--add-label <NAME>] [--remove-label <NAME>]
@@ -337,6 +337,8 @@ lific issue unlink <SOURCE> <TARGET>
 | `--add-label <NAME>`, `--remove-label <NAME>` | For `update`: add or remove single labels and keep the rest. Repeatable, or comma-separated. Adding a label the issue has, or removing one it lacks, changes nothing. Neither combines with `--labels`. |
 | `--set <NAME=VALUE>` | For `create` and `update`: set a [property](/docs/concepts/issues#properties) and keep the rest. Repeatable. The value is everything after the first `=`. |
 | `--unset <NAME>` | For `update`: remove a property. Repeatable. Removing one the issue lacks changes nothing. |
+| `--assignee <USERNAME>` | For `create` and `update`: assign the issue to this account, see [Assignee](/docs/concepts/issues#assignee). For `list`: shows only issues assigned to it. |
+| `--unassign` | For `update`: clear the assignee. Does not combine with `--assignee`. |
 | `--type <TYPE>` | For `link`: `blocks` (the default), `relates_to` or `duplicate`, read from `<SOURCE>` to `<TARGET>`. |
 | `-w, --workable` | For `list`: shows only open issues whose blockers are all `done`. |
 | `--limit <LIMIT>` | For `list`: the most issues to show. 50 by default, at most 500. |

@@ -15,6 +15,7 @@ An issue is one piece of work inside a project. It is identified by the project'
 | `priority` | `urgent`, `high`, `medium`, `low` or `none`. New issues start at `none`. |
 | `module` | At most one [module](/docs/concepts/modules-and-labels) from the same project. |
 | `labels` | Any number of the project's [labels](/docs/concepts/modules-and-labels). |
+| `assignee` | At most one account working the issue. See [Assignee](#assignee). |
 | `properties` | Free-form `name: value` text pairs. See [Properties](#properties). |
 | `start_date`, `target_date` | Optional calendar dates, written `YYYY-MM-DD`. |
 | `created_at`, `updated_at` | Set by Lific. Adding a comment or changing labels also moves `updated_at`. |
@@ -48,6 +49,14 @@ The [activity log](/docs/concepts/comments-and-activity) records every status ch
 ## Priority
 
 Priority is for sorting and filtering. When issues are sorted by priority the order is `urgent`, `high`, `medium`, `low`, then `none`. Lific attaches no other behavior to it.
+
+## Assignee
+
+An issue has at most one assignee: the user account, a person or an agent, that is working it. It is information for whoever looks at the board. Assigning an issue changes neither its status nor whether it counts as [workable](#ready-and-blocked-work).
+
+The assignee must be an active account that is a member of the project or an administrator. An agent counts through the person who owns it. Reads show `assignee` (the username, or `null`), and `assignee_display_name` and `assignee_is_bot` when somebody is assigned. The [activity log](/docs/concepts/comments-and-activity) records each change to `assignee`. Deleting the account clears the assignment; removing a member from the project leaves their issues assigned.
+
+The assignee travels with backups, Markdown exports and project archives, where it is carried by username: an account the importing instance does not have leaves the issue unassigned. It is left out of [public projects](/docs/concepts/projects). Assigning takes the same role as editing the issue.
 
 ## Properties
 
