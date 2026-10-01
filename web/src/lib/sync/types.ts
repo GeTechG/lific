@@ -45,6 +45,9 @@ export interface IssueRow {
    *  wait added or cleared re-delivers the row at a new seq. */
   waits?: IssueWait[];
   properties?: Record<string, string>;
+  assignee?: string | null;
+  assignee_display_name?: string;
+  assignee_is_bot?: boolean;
 }
 
 /** A live page row. Note the field the wire shape does NOT carry: no

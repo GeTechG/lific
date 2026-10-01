@@ -40,6 +40,7 @@
     onCycleChanged = () => {},
     labels,
     modules,
+    assignees = [],
     priorityCssColor,
     searchInputEl = $bindable(),
     onOpenSearch,
@@ -71,6 +72,8 @@
     /** Label + module lists feed the filter modal's Label / Module sections. */
     labels: Label[];
     modules: Module[];
+    /** Usernames assigned to at least one loaded issue. */
+    assignees?: string[];
     priorityCssColor: (p: string) => string;
     /** The search <input> DOM ref the parent focuses on `/` and openSearch. */
     searchInputEl: HTMLInputElement | null;
@@ -339,7 +342,7 @@
 
   <!-- Full filter modal (LIF-222 follow-up). Lives outside the trigger
        wrapper but is fixed-positioned, so DOM placement is irrelevant. -->
-  <FilterModal {view} {labels} {modules} {priorityCssColor} />
+  <FilterModal {view} {labels} {modules} {assignees} {priorityCssColor} />
 
   <!-- ── RIGHT ZONE: display / search / help / primary action ── -->
   <div class="ml-auto flex items-center gap-0.5 shrink-0">

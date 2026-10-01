@@ -28,11 +28,14 @@
     view,
     labels,
     modules,
+    assignees,
     priorityCssColor,
   }: {
     view: IssueListState;
     labels: Label[];
     modules: Module[];
+    /** Usernames assigned to at least one loaded issue. */
+    assignees: string[];
     priorityCssColor: (p: string) => string;
   } = $props();
 
@@ -250,6 +253,36 @@
                 >
                   <span class="size-2.5 rounded-full shrink-0" style="background: {safeLabelColor(l.color)}"></span>
                   <span class="flex-1 min-w-0 truncate text-body-sm font-medium text-[var(--text)]">{l.name}</span>
+                  {#if active}<Check size={14} class="shrink-0 text-[var(--accent)]" />{/if}
+                </button>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
+        <!-- ASSIGNEE -->
+        {#if assignees.length > 0 || view.filterAssignee}
+          <section>
+            <div class="px-1 pb-1.5 text-micro uppercase tracking-widest font-semibold text-[var(--text-faint)]">
+              Assignee
+            </div>
+            <div class="flex flex-col gap-0.5">
+              <button
+                class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors
+                       {!view.filterAssignee ? 'bg-[var(--accent-subtle)]' : 'hover:bg-[var(--bg-subtle)]'}"
+                onclick={() => (view.filterAssignee = "")}
+              >
+                <span class="flex-1 text-body-sm font-medium text-[var(--text)]">Any</span>
+                {#if !view.filterAssignee}<Check size={14} class="shrink-0 text-[var(--accent)]" />{/if}
+              </button>
+              {#each assignees as username (username)}
+                {@const active = view.filterAssignee === username}
+                <button
+                  class="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors
+                         {active ? 'bg-[var(--accent-subtle)]' : 'hover:bg-[var(--bg-subtle)]'}"
+                  onclick={() => view.toggleAssigneeFilter(username)}
+                >
+                  <span class="flex-1 min-w-0 truncate text-body-sm font-medium text-[var(--text)]">@{username}</span>
                   {#if active}<Check size={14} class="shrink-0 text-[var(--accent)]" />{/if}
                 </button>
               {/each}

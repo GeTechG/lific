@@ -668,6 +668,21 @@ export async function listMentionCandidates(projectId: number) {
   return request<MentionCandidate[]>(`/projects/${projectId}/mention-candidates`);
 }
 
+// ── Assignee candidates ─────────────────────────────────────
+//
+// The accounts an issue of this project may be assigned to: members,
+// administrators, and the agents they own.
+
+export interface AssigneeCandidate {
+  username: string;
+  display_name: string;
+  is_bot: boolean;
+}
+
+export async function listAssignees(projectId: number) {
+  return request<AssigneeCandidate[]>(`/projects/${projectId}/assignees`);
+}
+
 // ── Projects ────────────────────────────────────────────────
 
 export interface Project {
@@ -850,6 +865,11 @@ export interface Issue {
   created_at: string;
   updated_at: string;
   labels: string[];
+  /** Username of the account working the issue; null when unassigned. */
+  assignee?: string | null;
+  assignee_display_name?: string;
+  /** True when the assignee is an agent. */
+  assignee_is_bot?: boolean;
   /** Free-form text properties by name; `{}` when the issue has none. */
   properties?: Record<string, string>;
   blocks?: string[];
@@ -985,6 +1005,8 @@ export interface UpdateIssueInput {
   module_id?: number;
   sort_order?: number;
   labels?: string[];
+  /** A username assigns that account; null clears the assignee. */
+  assignee?: string | null;
   /** Property delta, applied server-side: other properties are kept. */
   set_properties?: Record<string, string>;
   unset_properties?: string[];

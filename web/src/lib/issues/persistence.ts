@@ -23,6 +23,7 @@ export type PersistedListState = {
   filterPriority?: string;
   filterLabel?: string;
   filterModule?: string;
+  filterAssignee?: string;
   searchQuery?: string;
   sortField?: SortField;
   sortDir?: SortDir;

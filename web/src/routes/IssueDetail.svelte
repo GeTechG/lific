@@ -23,6 +23,7 @@
   import LabelEditor from "../lib/LabelEditor.svelte";
   import WaitEditor from "../lib/issues/WaitEditor.svelte";
   import PropertyEditor from "../lib/issues/PropertyEditor.svelte"; // LIF-485
+  import AssigneeEditor from "../lib/issues/AssigneeEditor.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon, { statusCssColor, statusLabel } from "../lib/StatusIcon.svelte";
@@ -962,6 +963,18 @@
             {/if}
           </div>
         </div>
+
+        <!-- Viewers see the field only when somebody is assigned. -->
+        {#if issue.assignee || editable}
+          <AssigneeEditor
+            {issue}
+            {editable}
+            onChange={(next) => {
+              issue = next;
+              refreshActivity();
+            }}
+          />
+        {/if}
 
         <div class="issue-meta-field">
           {@render sidebarField("Labels")}

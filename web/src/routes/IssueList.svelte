@@ -480,6 +480,7 @@
     }
     if (view.filterPriority) out = out.filter((i) => i.priority === view.filterPriority);
     if (view.filterLabel) out = out.filter((i) => i.labels.includes(view.filterLabel));
+    if (view.filterAssignee) out = out.filter((i) => i.assignee === view.filterAssignee);
     if (view.filterModule) {
       const mod = modules.find((m) => m.name === view.filterModule);
       const mid = mod ? mod.id : null;
@@ -1629,6 +1630,7 @@
     onCycleChanged={focusNextChanged}
     {labels}
     {modules}
+    assignees={[...new Set(issues.flatMap((i) => (i.assignee ? [i.assignee] : [])))].sort()}
     {priorityCssColor}
     bind:searchInputEl
     onOpenSearch={openSearch}

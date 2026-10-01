@@ -228,6 +228,8 @@ export class IssueListState {
   filterPriority = $state("");
   filterLabel = $state("");
   filterModule = $state("");
+  /** Assignee username; "" for any. */
+  filterAssignee = $state("");
   searchQuery = $state("");
 
   // ── Sort ──
@@ -318,7 +320,8 @@ export class IssueListState {
       this.filterStatus ||
       this.filterPriority ||
       this.filterLabel ||
-      this.filterModule
+      this.filterModule ||
+      this.filterAssignee
     );
   }
 
@@ -327,6 +330,7 @@ export class IssueListState {
     this.filterPriority = "";
     this.filterLabel = "";
     this.filterModule = "";
+    this.filterAssignee = "";
     this.searchQuery = "";
   }
 
@@ -340,6 +344,10 @@ export class IssueListState {
 
   toggleStatusFilter(status: string): void {
     this.filterStatus = this.filterStatus === status ? "" : status;
+  }
+
+  toggleAssigneeFilter(username: string): void {
+    this.filterAssignee = this.filterAssignee === username ? "" : username;
   }
 
   toggleLabelFilter(name: string): void {
@@ -434,6 +442,7 @@ export class IssueListState {
     if (this.filterPriority) n++;
     if (this.filterLabel) n++;
     if (this.filterModule) n++;
+    if (this.filterAssignee) n++;
     return n;
   }
 
@@ -468,6 +477,7 @@ export class IssueListState {
     this.filterPriority = s.filterPriority ?? "";
     this.filterLabel = s.filterLabel ?? "";
     this.filterModule = s.filterModule ?? "";
+    this.filterAssignee = s.filterAssignee ?? "";
     this.searchQuery = s.searchQuery ?? "";
     if (s.sortField) this.sortField = s.sortField;
     if (s.sortDir) this.sortDir = s.sortDir;
@@ -488,6 +498,7 @@ export class IssueListState {
       filterPriority: this.filterPriority,
       filterLabel: this.filterLabel,
       filterModule: this.filterModule,
+      filterAssignee: this.filterAssignee,
       searchQuery: this.searchQuery,
       sortField: this.sortField,
       sortDir: this.sortDir,

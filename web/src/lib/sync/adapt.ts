@@ -65,6 +65,9 @@ export function toIssue(row: IssueRow, projectId: number): Issue {
     labels: row.labels,
     waits: row.waits,
     properties: row.properties,
+    assignee: row.assignee,
+    assignee_display_name: row.assignee_display_name,
+    assignee_is_bot: row.assignee_is_bot,
   };
   adapted.set(row, issue);
   return issue;
