@@ -84,7 +84,7 @@
   // ── Distribution rows ─────────────────────────────────
 
   const STATUS_LABEL: Record<string, string> = {
-    backlog: "Backlog", todo: "Todo", active: "Active", done: "Done", cancelled: "Cancelled",
+    backlog: "Backlog", todo: "Todo", active: "Active", in_review: "In review", done: "Done", cancelled: "Cancelled",
   };
   const PRIORITY_LABEL: Record<string, string> = {
     urgent: "Urgent", high: "High", medium: "Medium", low: "Low", none: "None",
@@ -92,7 +92,7 @@
 
   let statusItems = $derived(
     data
-      ? (["backlog", "todo", "active", "done", "cancelled"] as const).map((k) => ({
+      ? (["backlog", "todo", "active", "in_review", "done", "cancelled"] as const).map((k) => ({
           key: k,
           label: STATUS_LABEL[k],
           count: data!.status_counts[k],

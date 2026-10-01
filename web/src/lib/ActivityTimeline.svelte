@@ -12,7 +12,7 @@
   import type { Activity } from "./api";
   import { formatDate } from "./format";
   import TimeAgo from "./TimeAgo.svelte";
-  import StatusIcon from "./StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "./StatusIcon.svelte";
   import PriorityIcon from "./PriorityIcon.svelte";
   import { History, ChevronDown } from "lucide-svelte";
 
@@ -190,12 +190,12 @@
             {:else if a.action === "update" && a.field === "status"}
               <span class="inline-flex items-center gap-1 align-middle mx-0.5">
                 <StatusIcon status={a.old_value ?? ""} size={12} />
-                <span class="capitalize">{a.old_value}</span>
+                <span class="capitalize">{statusLabel(a.old_value ?? "")}</span>
               </span>
               <span class="text-[var(--text-faint)]">→</span>
               <span class="inline-flex items-center gap-1 align-middle mx-0.5">
                 <StatusIcon status={a.new_value ?? ""} size={12} />
-                <span class="capitalize text-[var(--text)]">{a.new_value}</span>
+                <span class="capitalize text-[var(--text)]">{statusLabel(a.new_value ?? "")}</span>
               </span>
             {:else if a.action === "update" && a.field === "priority"}
               <span class="inline-flex items-center gap-1 align-middle mx-0.5">

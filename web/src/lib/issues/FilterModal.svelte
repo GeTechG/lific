@@ -10,7 +10,7 @@
   // old inline popover did; data-derived inputs (labels, modules) come in as
   // props.
   import { X, Check, Layers, CircleDotDashed } from "lucide-svelte";
-  import StatusIcon from "../StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import {
     STATUSES,
@@ -168,7 +168,7 @@
               >
                 <span class="mt-0.5 shrink-0"><StatusIcon status={s} size={16} /></span>
                 <span class="flex-1 min-w-0">
-                  <span class="block text-body-sm font-medium capitalize text-[var(--text)]">{s}</span>
+                  <span class="block text-body-sm font-medium capitalize text-[var(--text)]">{statusLabel(s)}</span>
                   <span class="block text-caption text-[var(--text-faint)]">{STATUS_DESCRIPTIONS[s] ?? ""}</span>
                 </span>
                 {#if active}

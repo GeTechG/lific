@@ -109,7 +109,7 @@
   // Status vocabulary for the issues list inside the module —
   // mirrors IssueDetail's STATUSES list so the icons/colors stay
   // consistent across surfaces.
-  const ISSUE_STATUS_ORDER = ["backlog", "todo", "active", "done", "cancelled"];
+  const ISSUE_STATUS_ORDER = ["backlog", "todo", "active", "in_review", "done", "cancelled"];
 
   $effect(() => {
     const id = moduleId;

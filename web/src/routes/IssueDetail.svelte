@@ -24,7 +24,7 @@
   import WaitEditor from "../lib/issues/WaitEditor.svelte"; // LIF-485
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
-  import StatusIcon, { statusCssColor } from "../lib/StatusIcon.svelte";
+  import StatusIcon, { statusCssColor, statusLabel } from "../lib/StatusIcon.svelte";
   import { formatDate } from "../lib/format";
   import { recordRecent } from "../lib/home/recents"; // LIF-237
   import { updateIssueWithUndo } from "../lib/issues/state.svelte"; // LIF-243
@@ -152,6 +152,7 @@
     { value: "backlog", label: "Backlog" },
     { value: "todo", label: "Todo" },
     { value: "active", label: "Active" },
+    { value: "in_review", label: "In review" },
     { value: "done", label: "Done" },
     { value: "cancelled", label: "Cancelled" },
   ];
@@ -618,7 +619,7 @@
       {
         id: "set-status",
         title: "Set status…",
-        hint: i.status,
+        hint: statusLabel(i.status),
         children: () =>
           STATUSES.map((s) => ({
             title: s.label,
@@ -753,7 +754,7 @@
                  {editable ? 'hover:bg-[var(--bg-subtle)] cursor-pointer' : 'cursor-default'}"
           aria-haspopup={editable ? "menu" : undefined}
           aria-expanded={editable ? headerStatusOpen : undefined}
-          title={editable ? "Change status" : `Status: ${issue.status}`}
+          title={editable ? "Change status" : `Status: ${statusLabel(issue.status)}`}
           onclick={(e) => {
             if (!editable) return;
             e.stopPropagation();
@@ -766,7 +767,7 @@
         >
           <StatusIcon status={issue.status} size={13} />
           <span class="capitalize" style="color: {statusCssColor(issue.status)}">
-            {issue.status}
+            {statusLabel(issue.status)}
           </span>
           {#if editable}
             <ChevronDown size={11} class="text-[var(--text-faint)] shrink-0" />
@@ -817,7 +818,7 @@
               }}
             >
               <StatusIcon status={issue.status} size={14} />
-              <span class="capitalize text-[var(--text)]">{issue.status}</span>
+              <span class="capitalize text-[var(--text)]">{statusLabel(issue.status)}</span>
             </button>
             {#if statusOpen}
               <div

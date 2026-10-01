@@ -43,7 +43,7 @@
   import { toast } from "../toast/toast.svelte";
   import { STATUSES, PRIORITIES } from "./grouping";
   import { projectCodeOf } from "../references";
-  import StatusIcon from "../StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import ProjectIcon from "../ProjectIcon.svelte";
   import Skeleton from "../Skeleton.svelte"; // LIF-281
@@ -214,7 +214,7 @@
 
   const statusOptions = STATUSES.map((s) => ({
     value: s,
-    label: s[0].toUpperCase() + s.slice(1),
+    label: statusLabel(s[0].toUpperCase() + s.slice(1)),
   }));
   const priorityOptions = PRIORITIES.map((p) => ({
     value: p,

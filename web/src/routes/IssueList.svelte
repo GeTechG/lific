@@ -14,7 +14,7 @@
   import { Plus, ChevronRight, Layers, PanelLeftClose, PanelLeftOpen } from "lucide-svelte";
   import Tooltip from "../lib/Tooltip.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
-  import StatusIcon from "../lib/StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../lib/StatusIcon.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import Mascot from "../lib/Mascot.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
@@ -157,6 +157,7 @@
       backlog: 0,
       todo: 0,
       active: 0,
+      in_review: 0,
       done: 0,
       cancelled: 0,
       total: 0,
@@ -528,10 +529,7 @@
           .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
           .slice(0, 20);
       case "open":
-        return sortedIssues.filter(
-          (issue) =>
-            issue.status === "backlog" || issue.status === "todo" || issue.status === "active",
-        );
+        return sortedIssues.filter((issue) => isUnresolved(issue.status));
       case "closed":
         return sortedIssues.filter(
           (issue) => issue.status === "done" || issue.status === "cancelled",
@@ -1687,7 +1685,7 @@
               onclick={() => view.toggleStatusVisibility(projectIdentifier, status)}
             >
               <StatusIcon status={status} size={12} />
-              <span class="capitalize">{status}</span>
+              <span class="capitalize">{statusLabel(status)}</span>
               <span
                 class="tabular-nums text-micro
                        {visible
@@ -1813,7 +1811,7 @@
               {/each}
             </div>
             <div class="pointer-events-none absolute inset-0 flex flex-col items-center pt-2.5 pb-3 gap-2">
-              <Tooltip content="Expand {status} column" placement="right">
+              <Tooltip content="Expand {statusLabel(status)} column" placement="right">
                 <button
                   class="pointer-events-auto size-5 flex items-center justify-center rounded
                          text-[var(--text-faint)] hover:text-[var(--text)]
@@ -1828,7 +1826,7 @@
                 class="flex-1 text-caption font-semibold uppercase tracking-widest text-[var(--text-muted)]"
                 style="writing-mode: vertical-rl; transform: rotate(180deg);"
               >
-                {status}
+                {statusLabel(status)}
               </span>
               <span class="text-micro text-[var(--text-faint)] tabular-nums">{colIssues.length}</span>
             </div>
@@ -1843,7 +1841,7 @@
                 class="text-caption font-semibold uppercase tracking-widest
                        text-[var(--text-muted)]"
               >
-                {status}
+                {statusLabel(status)}
               </span>
               <span class="text-caption text-[var(--text-faint)] tabular-nums">
                 {colIssues.length}
@@ -1860,7 +1858,7 @@
                 </button>
               </Tooltip>
               {#if canEdit}
-                <Tooltip content="New {status} issue" placement="bottom">
+                <Tooltip content="New {statusLabel(status)} issue" placement="bottom">
                   <button
                     class="touch-target size-5 flex items-center justify-center rounded
                            text-[var(--text-faint)] hover:text-[var(--accent)]
@@ -2043,7 +2041,7 @@
                   onmouseenter={() => { view.inlineCreateStatusIdx = si; }}
                 >
                   <StatusIcon status={s} size={14} />
-                  {s}
+                  {statusLabel(s)}
                 </button>
               {/each}
             </div>

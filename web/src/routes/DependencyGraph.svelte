@@ -116,7 +116,7 @@
   }
 
   // ── Partition: linked vs unlinked ─────────────────────────
-  const OPEN = new Set(["backlog", "todo", "active"]);
+  const OPEN = new Set(["backlog", "todo", "active", "in_review"]);
 
   let visibleIssues = $derived(
     showClosed ? issues : issues.filter((i) => OPEN.has(i.status)),

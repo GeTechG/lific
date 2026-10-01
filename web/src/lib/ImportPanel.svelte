@@ -28,7 +28,7 @@
   let preview = $state<ImportSummary | null>(null);
   let result = $state<ImportSummary | null>(null);
 
-  const STATUSES = ["backlog", "todo", "active", "done", "cancelled"];
+  const STATUSES = ["backlog", "todo", "active", "in_review", "done", "cancelled"];
 
   function repoValid(): boolean {
     return /^[^/\s]+\/[^/\s]+$/.test(repo.trim());

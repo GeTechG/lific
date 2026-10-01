@@ -6,10 +6,17 @@
       case "backlog": return "var(--text-faint)";
       case "todo": return "var(--text-muted)";
       case "active": return "var(--accent)";
+      case "in_review": return "var(--warn-text)";
       case "done": return "var(--success)";
       case "cancelled": return "var(--text-faint)";
       default: return "var(--text-faint)";
     }
+  }
+
+  // Display text for a status value: the wire form is snake_case
+  // ("in_review"), and most surfaces capitalize it with CSS.
+  export function statusLabel(s: string): string {
+    return s.replace(/_/g, " ");
   }
 </script>
 
@@ -23,7 +30,7 @@
   // Issue statuses only — module lifecycle states (planned/paused/...)
   // keep their own vocabulary in ModuleList/ModuleDetail.
   import {
-    Circle, CircleDot, CircleDashed, CircleCheckBig, CircleX,
+    Circle, CircleDot, CircleDashed, CircleCheckBig, CircleX, CircleEllipsis,
   } from "lucide-svelte";
 
   let { status, size = 14 }: { status: string; size?: number } = $props();
@@ -33,6 +40,8 @@
   <CircleCheckBig {size} class="shrink-0" style="color: {statusCssColor(status)}" />
 {:else if status === "cancelled"}
   <CircleX {size} class="shrink-0" style="color: {statusCssColor(status)}" />
+{:else if status === "in_review"}
+  <CircleEllipsis {size} class="shrink-0" style="color: {statusCssColor(status)}" />
 {:else if status === "active"}
   <CircleDot {size} class="shrink-0" style="color: {statusCssColor(status)}" />
 {:else if status === "backlog"}

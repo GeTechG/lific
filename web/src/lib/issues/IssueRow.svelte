@@ -13,7 +13,7 @@
   import { safeLabelColor } from "../labelColors";
   import { Check, Signal, Layers, PanelRight, ExternalLink, Copy } from "lucide-svelte";
   import { longpress } from "../actions/longpress"; // press-and-hold peek on touch
-  import StatusIcon from "../StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import ProjectIcon from "../ProjectIcon.svelte";
   import Tooltip from "../Tooltip.svelte";
@@ -232,7 +232,7 @@
       <button
         class="size-4 flex items-center justify-center transition-colors
                {editable ? 'hover:text-[var(--accent)]' : 'cursor-default'}"
-        aria-label={`Status: ${issue.status}`}
+        aria-label={`Status: ${statusLabel(issue.status)}`}
         onclick={(e) => {
           e.stopPropagation();
           if (!editable) return;
@@ -261,7 +261,7 @@
             onmouseenter={() => onHoverStatusOption(si)}
           >
             <StatusIcon status={s} size={14} />
-            {s}
+            {statusLabel(s)}
           </button>
         {/each}
       </div>

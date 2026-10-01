@@ -12,7 +12,7 @@
   import { ArrowLeft } from "lucide-svelte";
   import LabelEditor from "../lib/LabelEditor.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
-  import StatusIcon from "../lib/StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../lib/StatusIcon.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import AttachComposer from "../lib/attachments/AttachComposer.svelte";
   import AttachTrigger from "../lib/attachments/AttachTrigger.svelte";
@@ -111,6 +111,7 @@
     { value: "backlog", label: "Backlog" },
     { value: "todo", label: "Todo" },
     { value: "active", label: "Active" },
+    { value: "in_review", label: "In review" },
     { value: "done", label: "Done" },
     { value: "cancelled", label: "Cancelled" },
   ];
@@ -339,7 +340,7 @@
                   }}
                 >
                   <StatusIcon {status} size={14} />
-                  <span class="capitalize text-[var(--text)]">{status}</span>
+                  <span class="capitalize text-[var(--text)]">{statusLabel(status)}</span>
                 </button>
                 {#if statusOpen}
                   <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->

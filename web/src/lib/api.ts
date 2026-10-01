@@ -944,6 +944,7 @@ export interface IssueStatusCounts {
   backlog: number;
   todo: number;
   active: number;
+  in_review: number;
   done: number;
   cancelled: number;
   total: number;

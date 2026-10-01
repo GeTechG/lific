@@ -73,7 +73,7 @@ export function describeIssueChange(
   modules: Module[],
 ): string {
   if ("status" in patch && patch.status !== prevPatch.status) {
-    return `→ ${capitalize(String(patch.status))}`;
+    return `→ ${capitalize(String(patch.status).replace(/_/g, " "))}`;
   }
   if ("module_id" in patch && patch.module_id !== prevPatch.module_id) {
     const id = patch.module_id as number | null;

@@ -617,7 +617,7 @@
       const statusParam = query.get("status");
       const defaultStatus =
         statusParam &&
-        ["backlog", "todo", "active", "done", "cancelled"].includes(statusParam)
+        ["backlog", "todo", "active", "in_review", "done", "cancelled"].includes(statusParam)
           ? statusParam
           : null;
       return {

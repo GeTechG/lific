@@ -961,6 +961,11 @@ html[data-motion="reduced"] *::after {
   --issue-status-color: var(--accent);
 }
 
+.prose .identifier-link[data-issue-status="in_review"] {
+  --issue-status-color: var(--warn);
+  --issue-status-icon-color: var(--warn-text);
+}
+
 .prose .identifier-link[data-issue-status="done"] {
   --issue-status-color: var(--success);
   --issue-status-icon-color: color-mix(in srgb, var(--success) 80%, var(--text));

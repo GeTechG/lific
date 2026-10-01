@@ -19,7 +19,7 @@
   import Tooltip from "../Tooltip.svelte";
   import SubTabs, { type SubTab } from "../SubTabs.svelte";
   import Breadcrumbs from "../Breadcrumbs.svelte";
-  import StatusIcon from "../StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../StatusIcon.svelte";
   import Skeleton from "../Skeleton.svelte";
   import FilterModal from "./FilterModal.svelte";
   import SavedViews from "./SavedViews.svelte";
@@ -126,7 +126,7 @@
     return [
       { id: "all", label: "All", count: statusCounts.reduce((sum, entry) => sum + entry.count, 0) },
       { id: "recent", label: "Recent" },
-      { id: "open", label: "Open", count: countFor("backlog") + countFor("todo") + countFor("active") },
+      { id: "open", label: "Open", count: countFor("backlog") + countFor("todo") + countFor("active") + countFor("in_review") },
       { id: "closed", label: "Closed", count: countFor("done") + countFor("cancelled") },
     ];
   });
@@ -270,7 +270,7 @@
         {#each statusCounts as { status, count } (status)}
           {#if count > 0}
             <Tooltip
-              content={`${count} ${status}${view.filterStatus === status ? "  ·  click to clear" : ""}`}
+              content={`${count} ${statusLabel(status)}${view.filterStatus === status ? "  ·  click to clear" : ""}`}
               placement="bottom"
             >
               <button

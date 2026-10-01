@@ -393,7 +393,7 @@
   }
 
   const openIssues = $derived(
-    issues.filter((i) => i.status === "backlog" || i.status === "todo" || i.status === "active"),
+    issues.filter((i) => i.status !== "done" && i.status !== "cancelled"),
   );
   const ranked = $derived.by(() =>
     [...openIssues].sort((a, b) => score(b) - score(a)),

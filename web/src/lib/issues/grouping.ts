@@ -9,7 +9,7 @@
 import type { Issue, Module } from "../api";
 
 /** Canonical status order (backlog → cancelled). */
-export const STATUSES = ["backlog", "todo", "active", "done", "cancelled"];
+export const STATUSES = ["backlog", "todo", "active", "in_review", "done", "cancelled"];
 /** Canonical priority order (urgent → none). */
 export const PRIORITIES = ["urgent", "high", "medium", "low", "none"];
 
@@ -17,7 +17,8 @@ export const PRIORITIES = ["urgent", "high", "medium", "low", "none"];
 export const TERMINAL_STATUSES = ["done", "cancelled"];
 
 /** Sentinel `filterStatus` value for the "Unresolved" status-group filter:
- *  everything that isn't in a terminal state (backlog + todo + active). Uses
+ *  everything that isn't in a terminal state (backlog + todo + active +
+ *  in_review). Uses
  *  an `@`-prefix so it can never collide with a real status string. */
 export const STATUS_UNRESOLVED = "@unresolved";
 
@@ -32,13 +33,14 @@ export const STATUS_DESCRIPTIONS: Record<string, string> = {
   backlog: "Captured, not yet planned.",
   todo: "Planned and ready to start.",
   active: "In progress right now.",
+  in_review: "Finished, waiting for review or merge.",
   done: "Completed and shipped.",
   cancelled: "Abandoned — won't be done.",
 };
 
 /** Description of the "Unresolved" status-group filter. */
 export const UNRESOLVED_DESCRIPTION =
-  "All open work — backlog, todo, and active.";
+  "All open work — backlog, todo, active, and in review.";
 
 /** One-line descriptions of each priority level. */
 export const PRIORITY_DESCRIPTIONS: Record<string, string> = {
@@ -96,7 +98,7 @@ export function buildGroups(opts: {
   if (groupBy === "status") {
     for (const s of STATUSES) {
       const items = sortedIssues.filter((i) => i.status === s);
-      if (items.length) out.push({ key: s, label: s, kind: "status", issues: items });
+      if (items.length) out.push({ key: s, label: s.replace(/_/g, " "), kind: "status", issues: items });
     }
   } else if (groupBy === "priority") {
     for (const p of PRIORITIES) {

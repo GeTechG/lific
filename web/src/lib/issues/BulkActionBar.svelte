@@ -21,7 +21,7 @@
   import { safeLabelColor } from "../labelColors";
   import { fly } from "svelte/transition";
   import { Trash2, X } from "lucide-svelte";
-  import StatusIcon from "../StatusIcon.svelte";
+  import StatusIcon, { statusLabel } from "../StatusIcon.svelte";
   import PriorityIcon from "../PriorityIcon.svelte";
   import { STATUSES, PRIORITIES } from "./grouping";
 
@@ -121,7 +121,7 @@
               onclick={() => onUpdate({ status: s })}
             >
               <StatusIcon status={s} size={14} />
-              {s}
+              {statusLabel(s)}
             </button>
           {/each}
         </div>
