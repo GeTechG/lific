@@ -30,8 +30,16 @@ export async function checkIssueAssignee(context: BrowserContext, base: string, 
     const field = page.getByTestId("issue-assignee");
     const chip = `[data-assignee="${username}"]`;
     await field.getByRole("button", { name: "Unassigned" }).click();
-    // The menu is fixed-position, outside the field.
-    await page.getByRole("button", { name: "Smoke Operator", exact: true }).click();
+    // The menu is fixed-position, outside the field — and must still open
+    // under its trigger: the sidebar's translate makes the aside the menu's
+    // containing block, which once pushed it past the right edge.
+    const option = page.getByRole("button", { name: "Smoke Operator", exact: true });
+    const box = await option.boundingBox();
+    const width = page.viewportSize()?.width ?? 0;
+    if (!box || box.x < 0 || box.x + box.width > width) {
+      throw new Error(`assignee menu opened off-screen: ${JSON.stringify(box)} in a ${width}px viewport`);
+    }
+    await option.click();
     await field.locator(chip).waitFor({ state: "visible" });
     console.log("ok   issue detail assigns from the member picker");
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { ChevronDown, Check } from "lucide-svelte";
 
   type Option = { value: string | number | null; label: string; [key: string]: unknown };
@@ -61,7 +62,13 @@
       top = t.top - m.height - 4;
     }
     const left = Math.max(8, Math.min(t.left, window.innerWidth - m.width - 8));
-    menuPos = { top, left, minWidth: t.width };
+    // An ancestor with a transform or translate (the issue sidebar) is the
+    // containing block of a fixed element, so the menu lands offset from the
+    // viewport coordinates it was given: measure that offset and take it out.
+    const seeded = untrack(() => menuPos);
+    const dx = m.left - seeded.left;
+    const dy = m.top - seeded.top;
+    menuPos = { top: top - dy, left: left - dx, minWidth: t.width };
   });
 
   let selected = $derived(options.find((o) => o.value === value));
