@@ -291,6 +291,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue properties",
         include_str!("../../migrations/059_issue_properties.sql"),
     ),
+    (
+        60,
+        "issue assignee",
+        include_str!("../../migrations/060_issue_assignee.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -981,7 +986,7 @@ mod tests {
         assert_eq!(before.len(), 5);
         let triggers_before = count(
             &conn,
-            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties'",
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties' AND name<>'audit_issues_assignee'",
         );
 
         run(&conn).unwrap();
@@ -990,7 +995,7 @@ mod tests {
         assert_eq!(
             count(
                 &conn,
-                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties'"
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties' AND name<>'audit_issues_assignee'"
             ),
             triggers_before
         );
@@ -1084,6 +1089,45 @@ mod tests {
         }
         assert!(insert(&"n".repeat(65), "v").is_err());
         insert(&"n".repeat(64), "v").expect("64 characters fit");
+    }
+
+    /// Migration 060 adds the assignee column in place: existing issues keep
+    /// their rows, seq and properties, and read back unassigned.
+    #[test]
+    fn issue_assignee_upgrade_keeps_existing_issues_and_leaves_them_unassigned() {
+        let conn = migrated_up_to(60);
+        conn.execute_batch(
+            "INSERT INTO users(id,username,email,password_hash,is_admin) VALUES(1,'root','r@t','x',1);
+             INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title,status) VALUES(1,1,1,'Old','in_review');
+             INSERT INTO issue_properties(issue_id,name,value) VALUES(1,'footprint','src/');",
+        )
+        .unwrap();
+        let seq_before = seq_of(&conn, "issues", 1);
+
+        run(&conn).unwrap();
+
+        let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
+        assert_eq!(issue.status, Status::InReview);
+        assert_eq!(issue.properties["footprint"], "src/");
+        assert_eq!(issue.assignment.assignee, None);
+        assert_eq!(seq_of(&conn, "issues", 1), seq_before);
+
+        conn.execute("UPDATE issues SET assignee_id = 1 WHERE id = 1", [])
+            .unwrap();
+        assert!(seq_of(&conn, "issues", 1) > seq_before);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM audit_log WHERE field='assignee' AND new_value='root'"
+            ),
+            1
+        );
+        assert!(
+            conn.execute("UPDATE issues SET assignee_id = 99 WHERE id = 1", [])
+                .is_err(),
+            "the assignee must be a real account"
+        );
     }
 
     fn stored_checksum(conn: &Connection, version: i64) -> Option<String> {

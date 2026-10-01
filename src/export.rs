@@ -941,6 +941,8 @@ fn render_issue_markdown(
         priority: crate::db::models::Priority,
         module: Option<String>,
         labels: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assignee: &'a Option<String>,
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         properties: &'a BTreeMap<String, String>,
         blocks: &'a [String],
@@ -967,6 +969,7 @@ fn render_issue_markdown(
             priority: issue.priority,
             module,
             labels: &issue.labels,
+            assignee: &issue.assignment.assignee,
             properties: &issue.properties,
             blocks: &issue.blocks,
             blocked_by: &issue.blocked_by,
@@ -1227,6 +1230,15 @@ mod tests {
             },
         )
         .unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &crate::db::models::UpdateIssue {
+                assignee: Some(Some("tester".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         queries::comments::create_comment(
             &conn,
             queries::comments::CommentParent::Issue(issue.id),
@@ -1289,6 +1301,11 @@ mod tests {
             issue_file
                 .content
                 .contains("properties:\n  footprint: src/a.js, test/\n"),
+            "{}",
+            issue_file.content
+        );
+        assert!(
+            issue_file.content.contains("assignee: tester\n"),
             "{}",
             issue_file.content
         );

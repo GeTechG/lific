@@ -260,6 +260,13 @@ const SPECS: &[Spec] = &[
         columns: "issue_id,name,value,created_at,updated_at",
         scope: "issue_id IN (SELECT id FROM issues WHERE project_id = ?1)",
     },
+    // The assignee. Not a table: it is `issues.assignee_id`, carried by
+    // username for the same reason a wait is (see `assign_imported`).
+    Spec {
+        name: "issue_assignees",
+        columns: "issue_id,username",
+        scope: "project_id = ?1 AND assignee_id IS NOT NULL",
+    },
     Spec {
         name: "page_issue_links",
         columns: "page_id,issue_id",
@@ -543,11 +550,20 @@ fn read_table(
             format!("COALESCE(imported_author, (SELECT COALESCE(NULLIF(display_name,''), username) || ' (imported)' FROM users WHERE id = {}.{actor}), 'Unknown author (imported)')", s.name)
         } else if s.name == "issue_waits" && c == "username" {
             "(SELECT username FROM users WHERE id = issue_waits.user_id)".to_string()
+        } else if s.name == "issue_assignees" {
+            match c {
+                "issue_id" => "id".to_string(),
+                _ => "(SELECT username FROM users WHERE id = issues.assignee_id)".to_string(),
+            }
         } else { c.to_string() }
     }).collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT {columns} FROM {} WHERE ({}) ORDER BY rowid LIMIT {}",
-        s.name,
+        if s.name == "issue_assignees" {
+            "issues"
+        } else {
+            s.name
+        },
         s.scope,
         limits().max_rows + 1
     );
@@ -1082,7 +1098,7 @@ fn upgrade_manifest(m: &mut Manifest) {
 
 /// Tables added after format v1 shipped. An archive from an older Lific
 /// lacks them, which means "none of these rows", not a damaged archive.
-const OPTIONAL_TABLES: &[&str] = &["issue_waits", "issue_properties"];
+const OPTIONAL_TABLES: &[&str] = &["issue_waits", "issue_properties", "issue_assignees"];
 
 fn backfill_optional_tables(m: &mut Manifest) {
     for name in OPTIONAL_TABLES {
@@ -1207,6 +1223,30 @@ fn insert_wait(conn: &Connection, row: &Row, external: &mut RewriteState) -> Res
             value("created_at")?,
         ],
     )?;
+    Ok(())
+}
+
+/// Assign an imported issue to the destination account with the same
+/// username. With no such active account the issue arrives unassigned, and
+/// the report says so.
+fn assign_imported(conn: &Connection, row: &Row, external: &mut RewriteState) -> Result<()> {
+    let s = spec("issue_assignees")?;
+    let username = text(s.get(row, "username"))?;
+    let assigned = conn.execute(
+        "UPDATE issues
+            SET assignee_id = (SELECT id FROM users
+                                WHERE username = ?1 COLLATE NOCASE AND is_active = 1)
+          WHERE id = ?2
+            AND EXISTS (SELECT 1 FROM users WHERE username = ?1 COLLATE NOCASE AND is_active = 1)",
+        rusqlite::params![username, sql_value(s.get(row, "issue_id"))?],
+    )?;
+    if assigned == 0 {
+        external.record(&[
+            "issue_assignees: no active user named ",
+            username,
+            " on this instance; issue left unassigned",
+        ])?;
+    }
     Ok(())
 }
 
@@ -1902,6 +1942,8 @@ pub fn import_with(
                 let row = imported_row(s, original, &maps, &mut external)?;
                 if s.name == "issue_waits" {
                     insert_wait(&tx, &row, &mut external)?;
+                } else if s.name == "issue_assignees" {
+                    assign_imported(&tx, &row, &mut external)?;
                 } else {
                     insert_row(&tx, s, &row)?;
                 }

@@ -233,6 +233,11 @@ impl Display for IssueLine<'_> {
         })?;
         self.module
             .map_or(Ok(()), |name| write!(formatter, " (module: {name})"))?;
+        issue
+            .assignment
+            .assignee
+            .as_deref()
+            .map_or(Ok(()), |name| write!(formatter, " @{name}"))?;
         [
             (" blocks:", issue.blocks.as_slice()),
             (" blocked_by:", issue.blocked_by.as_slice()),
@@ -447,6 +452,7 @@ fn create_batch_item(
             start_date: item.start_date.clone(),
             target_date: item.target_date.clone(),
             labels,
+            assignee: item.assignee.clone(),
             set_properties: item.set_properties.clone().unwrap_or_default(),
             source: None,
             attachments,
@@ -2117,6 +2123,7 @@ impl LificMcp {
                         (Some(name), Some(pid)) => Some(names::stored_label_name(conn, pid, name)?),
                         _ => None,
                     },
+                    assignee: input.assignee.clone(),
                     workable: input.workable,
                     blocked: input.blocked,
                     created_since: input.created_since.clone(),
@@ -2348,6 +2355,11 @@ No issues found."
                     }
                 )
             })?;
+            issue
+                .assignment
+                .assignee
+                .as_deref()
+                .map_or(Ok(()), |name| writeln!(output, "Assignee: @{name}"))?;
             issue
                 .properties
                 .iter()
@@ -2615,6 +2627,7 @@ No issues found."
                         pid,
                         input.labels.as_deref().unwrap_or_default(),
                     )?,
+                    assignee: input.assignee.clone(),
                     set_properties: input.set_properties.clone().unwrap_or_default(),
                     source: None,
                     attachments,
@@ -2678,7 +2691,8 @@ No issues found."
             || input.labels.is_some()
             || input.start_date.is_some()
             || input.target_date.is_some()
-            || input.set_properties.is_some();
+            || input.set_properties.is_some()
+            || input.assignee.is_some();
         if has_single_fields {
             return Err(
                 "with issues, set title and the other fields on each item; only project applies to the whole batch"
@@ -2857,6 +2871,11 @@ No issues found."
                             names::stored_label_names(conn, previous_issue.project_id, labels)
                         })
                         .transpose()?,
+                    // Same sentinel as `module`: "" unassigns.
+                    assignee: input
+                        .assignee
+                        .clone()
+                        .map(|name| Some(name).filter(|name| !name.is_empty())),
                     set_properties: input.set_properties.clone().unwrap_or_default(),
                     unset_properties: input.unset_properties.clone().unwrap_or_default(),
                     // LIF-441: omitted means last-writer-wins, unchanged.
@@ -6645,6 +6664,59 @@ mod tests {
     }
 
     #[test]
+    fn the_assignee_is_set_shown_filtered_and_cleared_with_an_empty_string() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Test", "ASG");
+        let created = m.create_issue(Parameters(CreateIssueInput {
+            project: Some("ASG".into()),
+            title: "Mine".into(),
+            assignee: Some("admin".into()),
+            ..Default::default()
+        }));
+        assert!(created.contains("ASG-1"), "got: {created}");
+        m.create_issue(Parameters(CreateIssueInput {
+            project: Some("ASG".into()),
+            title: "Free".into(),
+            ..Default::default()
+        }));
+
+        let detail = m.get_issue(Parameters(GetIssueInput {
+            identifier: "ASG-1".into(),
+            ..Default::default()
+        }));
+        assert!(detail.contains("Assignee: @admin\n"), "got: {detail}");
+        let list = |assignee: Option<&str>| {
+            m.list_issues(Parameters(ListIssuesInput {
+                project: Some("ASG".into()),
+                assignee: assignee.map(str::to_string),
+                ..Default::default()
+            }))
+        };
+        let mine = list(Some("admin"));
+        assert!(mine.starts_with("1 issues:"), "got: {mine}");
+        assert!(mine.contains("Mine @admin"), "got: {mine}");
+        assert!(list(None).starts_with("2 issues:"));
+
+        let refused = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "ASG-2".into(),
+            assignee: Some("nobody".into()),
+            ..Default::default()
+        }));
+        assert!(
+            refused.contains("no active user named 'nobody'"),
+            "got: {refused}"
+        );
+
+        let cleared = m.update_issue(Parameters(UpdateIssueInput {
+            identifier: "ASG-1".into(),
+            assignee: Some(String::new()),
+            ..Default::default()
+        }));
+        assert!(!cleared.starts_with("Error"), "got: {cleared}");
+        assert_eq!(list(Some("admin")), "No issues found.");
+    }
+
+    #[test]
     fn update_issue_sets_start_date() {
         let (m, _guard) = mcp();
         seed_project(&m, "Test", "STD");
@@ -8384,6 +8456,7 @@ mod tests {
             source: None,
             labels: vec!["bug".into()],
             properties: Default::default(),
+            assignment: Default::default(),
             blocks: vec!["T-2".into()],
             blocked_by: vec![],
             relates_to: vec![],

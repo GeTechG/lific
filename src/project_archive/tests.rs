@@ -37,6 +37,7 @@ pub(super) fn seed(pool: &DbPool, store: &AttachmentStore) {
         INSERT INTO issue_waits(id,issue_id,kind,user_id,note) VALUES(90,30,'user',1,'decide');
         INSERT INTO issue_waits(id,issue_id,kind,earliest,latest,note) VALUES(91,30,'date','2026-09-28','2026-09-29','office');
         INSERT INTO issue_properties(issue_id,name,value) VALUES(30,'footprint','src/a.js, test/'),(32,'footprint','PRIVATE PROPERTY');
+        UPDATE issues SET assignee_id=1 WHERE id=30;
         UPDATE issues SET status='done' WHERE id=30;
         UPDATE issues SET deleted_at='2025-02-03 00:00:00' WHERE id=31;
         UPDATE pages SET deleted_at='2025-02-03 00:00:00' WHERE id=41;").unwrap();
@@ -989,6 +990,9 @@ fn project_archive_column_types_match_every_static_schema_column() {
             // `user_id`, which does not travel between instances.
             let schema_type = match (s.name, column) {
                 ("issue_waits", "username") => "TEXT",
+                // Not a table: `issues.assignee_id`, carried by username.
+                ("issue_assignees", "username") => "TEXT",
+                ("issue_assignees", "issue_id") => "INTEGER",
                 _ => types[column].as_str(),
             };
             let wrong = match schema_type {

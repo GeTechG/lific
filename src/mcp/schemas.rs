@@ -49,6 +49,8 @@ pub struct ListIssuesInput {
     pub module: Option<String>,
     #[schemars(description = "Filter by label name")]
     pub label: Option<String>,
+    #[schemars(description = "Filter by assignee username")]
+    pub assignee: Option<String>,
     #[schemars(description = "Only return issues with no unresolved blockers")]
     pub workable: Option<bool>,
     #[schemars(description = "Return issues with at least one blocker.")]
@@ -158,6 +160,8 @@ pub struct CreateIssueInput {
     pub target_date: Option<String>,
     #[schemars(description = "Text properties to set: {name: value}")]
     pub set_properties: Option<BTreeMap<String, String>>,
+    #[schemars(description = "Assignee username")]
+    pub assignee: Option<String>,
     #[schemars(
         description = "Create up to 50 issues atomically instead: each item takes the fields above except project. Only project may accompany it.",
         schema_with = "create_issue_items_schema"
@@ -191,6 +195,7 @@ pub struct CreateIssueItem {
     pub start_date: Option<String>,
     pub target_date: Option<String>,
     pub set_properties: Option<BTreeMap<String, String>>,
+    pub assignee: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -220,6 +225,8 @@ pub struct UpdateIssueInput {
     pub set_properties: Option<BTreeMap<String, String>>,
     #[schemars(description = "Property names to remove")]
     pub unset_properties: Option<Vec<String>>,
+    #[schemars(description = "Assignee username; \"\" to unassign")]
+    pub assignee: Option<String>,
     #[schemars(
         description = "Optional concurrency check: the 'seq' you last read for this issue. The update is refused if the issue has changed since. Omit for last-writer-wins."
     )]

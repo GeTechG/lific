@@ -87,6 +87,8 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
     issue.waits.clear();
     // Properties are internal bookkeeping (paths, tool state), like `source`.
     issue.properties.clear();
+    // The assignee names an account, like a wait.
+    issue.assignment = Default::default();
     for relations in [
         &mut issue.blocks,
         &mut issue.blocked_by,

@@ -358,6 +358,7 @@ fn rest_manifest() -> HashMap<(&'static str, &'static str), Classification> {
             ("GET", "/api/projects/{id}/mention-candidates"),
             Gated(Viewer),
         ),
+        (("GET", "/api/projects/{id}/assignees"), Gated(Viewer)),
         // ── Saved views (LIF-242, REST/web-only) ──
         // Gated(Viewer) is the *project-role* floor only — every one of
         // these additionally enforces strict per-user ownership in the

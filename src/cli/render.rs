@@ -122,15 +122,22 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
             .and_then(module_name)
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
+        let assignee = issue
+            .assignment
+            .assignee
+            .as_deref()
+            .map(|name| format!(" @{name}"))
+            .unwrap_or_default();
         w!(
             out,
-            "  {:<8} {} | {} | {}{}{}",
+            "  {:<8} {} | {} | {}{}{}{}",
             issue.identifier,
             fmt_status(issue.status),
             fmt_priority(issue.priority),
             issue.title,
             bracketed_labels(&issue.labels),
-            module
+            module,
+            assignee
         );
     }
     out
@@ -143,6 +150,9 @@ pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     w!(out, "  Priority: {}", issue.priority);
     if !issue.labels.is_empty() {
         w!(out, "  Labels:   {}", issue.labels.join(", "));
+    }
+    if let Some(assignee) = &issue.assignment.assignee {
+        w!(out, "  Assignee: @{assignee}");
     }
     for (name, value) in &issue.properties {
         w!(out, "  {name}: {value}");
@@ -573,6 +583,7 @@ mod tests {
             source: None,
             labels: Vec::new(),
             properties: Default::default(),
+            assignment: Default::default(),
             blocks: Vec::new(),
             blocked_by: Vec::new(),
             relates_to: Vec::new(),

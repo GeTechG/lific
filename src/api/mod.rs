@@ -331,6 +331,11 @@ fn router_impl(
             "/api/projects/{id}/mention-candidates",
             get(comments::mention_candidates),
         )
+        // The accounts an issue of this project may be assigned to.
+        .route(
+            "/api/projects/{id}/assignees",
+            get(issues::assignee_candidates),
+        )
         // Per-status issue counts (topbar tallies — LIF-161)
         .route(
             "/api/projects/{id}/issue-counts",

@@ -177,6 +177,7 @@ fn issue_change(row: &Row) -> rusqlite::Result<IssueChange> {
         preview: preview_of(&row.get::<_, Option<String>>(BODY)?.unwrap_or_default()),
         labels: Vec::new(),
         properties: Default::default(),
+        assignment: Default::default(),
         waits: Vec::new(),
     })
 }
@@ -362,6 +363,7 @@ pub fn list_changes(
     let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
     let mut issue_waits = super::waits::waits_by_issue(conn, &issue_ids)?;
     let mut issue_properties = super::properties::properties_by_issue(conn, &issue_ids)?;
+    let mut issue_assignments = super::assignee::assignments_by_issue(conn, &issue_ids)?;
     let mut page_labels = labels_by_page(conn, &page_ids)?;
     for change in &mut changes {
         match change {
@@ -369,6 +371,7 @@ pub fn list_changes(
                 issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
                 issue.waits = issue_waits.remove(&issue.id).unwrap_or_default();
                 issue.properties = issue_properties.remove(&issue.id).unwrap_or_default();
+                issue.assignment = issue_assignments.remove(&issue.id).unwrap_or_default();
             }
             Change::Page(page) => {
                 page.labels = page_labels.remove(&page.id).unwrap_or_default();
@@ -431,10 +434,12 @@ pub fn index_rows(
     let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
     let mut issue_waits = super::waits::waits_by_issue(conn, &issue_ids)?;
     let mut issue_properties = super::properties::properties_by_issue(conn, &issue_ids)?;
+    let mut issue_assignments = super::assignee::assignments_by_issue(conn, &issue_ids)?;
     for issue in &mut issues {
         issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
         issue.waits = issue_waits.remove(&issue.id).unwrap_or_default();
         issue.properties = issue_properties.remove(&issue.id).unwrap_or_default();
+        issue.assignment = issue_assignments.remove(&issue.id).unwrap_or_default();
     }
 
     let page_ids: Vec<i64> = pages.iter().map(|page| page.id).collect();

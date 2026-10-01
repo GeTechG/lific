@@ -43,6 +43,20 @@ pub(super) async fn get_issue(
     Ok(Json(issue))
 }
 
+/// The accounts the assignee picker offers: active members and
+/// administrators, and the bots they own.
+pub(super) async fn assignee_candidates(
+    State(db): State<DbPool>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(project_id): Path<i64>,
+) -> Result<Json<Vec<AssigneeCandidate>>, LificError> {
+    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
+    with_read(&db, |conn| {
+        crate::db::queries::assignee::candidates(conn, project_id)
+    })
+    .map(Json)
+}
+
 pub(super) async fn resolve_issue(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
@@ -553,6 +567,94 @@ mod tests {
             .collect();
         assert_eq!(fields.len(), 4, "two sets, one change, one unset: {feed}");
         assert!(fields.contains(&"property:pr"), "{feed}");
+    }
+
+    #[tokio::test]
+    async fn the_assignee_is_set_cleared_filtered_and_restricted_to_members() {
+        let (db, _admin, _lead, maintainer, _viewer, _non_member, project_id) =
+            setup_membership_test();
+        let app = app_as_user(db, &maintainer);
+        let created = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Mine", "assignee": "viewer"}),
+            )
+            .await,
+        )
+        .await;
+        let id = created["id"].as_i64().unwrap();
+        assert_eq!(created["assignee"], "viewer");
+        assert_eq!(created["assignee_display_name"], "viewer");
+        let bare = body_of(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Free"}),
+            )
+            .await,
+        )
+        .await;
+        assert!(bare["assignee"].is_null(), "always present: {bare}");
+        assert!(bare.get("assignee").is_some());
+
+        let path = format!("/api/issues/{id}");
+        let put = |body: serde_json::Value| json_put(&app, &path, body);
+        // A non-member admin is assignable; a non-member is not; a stranger
+        // is not found. A refused assignment takes the rest of the edit down.
+        let resp = put(serde_json::json!({"assignee": "admin"})).await;
+        assert_eq!(body_of(resp).await["assignee"], "admin");
+        let resp = put(serde_json::json!({"title": "Moved", "assignee": "non_member"})).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let resp = put(serde_json::json!({"title": "Moved", "assignee": "nobody"})).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // An edit that does not mention the assignee leaves it alone.
+        let resp = put(serde_json::json!({"status": "active"})).await;
+        let kept = body_of(resp).await;
+        assert_eq!(kept["assignee"], "admin");
+        assert_eq!(kept["title"], "Mine");
+
+        let listed = body_of(
+            json_get(
+                &app,
+                &format!("/api/issues?project_id={project_id}&assignee=admin"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["assignee"], "admin");
+        let changes =
+            body_of(json_get(&app, &format!("/api/projects/{project_id}/changes")).await).await;
+        let change = changes["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|change| change["id"] == id)
+            .unwrap();
+        assert_eq!(change["assignee"], "admin");
+
+        let resp = put(serde_json::json!({"assignee": null})).await;
+        assert!(body_of(resp).await["assignee"].is_null());
+
+        let feed = body_of(json_get(&app, &format!("/api/issues/{id}/activity")).await).await;
+        let assignments = feed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["field"] == "assignee")
+            .count();
+        assert_eq!(assignments, 3, "assigned, reassigned, cleared: {feed}");
+
+        let candidates =
+            body_of(json_get(&app, &format!("/api/projects/{project_id}/assignees")).await).await;
+        let names: Vec<&str> = candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate["username"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["admin", "lead", "maintainer", "viewer"]);
     }
 
     #[tokio::test]
