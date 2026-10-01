@@ -34,6 +34,7 @@ import { checkPaletteSearch } from "./palette-search";
 import { checkDuplicateRelations } from "./duplicate-relations";
 import { checkIssueWaits } from "./issue-waits";
 import { checkIssueAssignee } from "./issue-assignee";
+import { checkIssueRunLog } from "./issue-run-log";
 import { Database } from "bun:sqlite";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -233,6 +234,7 @@ async function main(): Promise<number> {
     await checkDuplicateRelations(context, base);
     await checkIssueWaits(context, base, "smoke-operator");
     await checkIssueAssignee(context, base, "smoke-operator");
+    await checkIssueRunLog(context, base);
 
     // ---- deep-link back synthesis (LIF-434) ----------------------------
     // A detail view opened as the app's entry point gets a synthesized

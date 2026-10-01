@@ -48,6 +48,8 @@ export interface IssueRow {
   assignee?: string | null;
   assignee_display_name?: string;
   assignee_is_bot?: boolean;
+  /** As of the read that delivered the row; a new line does not re-deliver it. */
+  last_log_at?: string;
 }
 
 /** A live page row. Note the field the wire shape does NOT carry: no

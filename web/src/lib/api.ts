@@ -872,6 +872,9 @@ export interface Issue {
   assignee_is_bot?: boolean;
   /** Free-form text properties by name; `{}` when the issue has none. */
   properties?: Record<string, string>;
+  /** When the newest run-log line was written (UTC, `YYYY-MM-DD HH:MM:SS`).
+   *  Absent when the issue has no lines. */
+  last_log_at?: string;
   blocks?: string[];
   blocked_by?: string[];
   relates_to?: string[];
@@ -991,6 +994,31 @@ export async function createIssue(input: CreateIssueInput) {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+// ── Run log ─────────────────────────────────────────────────
+//
+// Lines a scheduler appends while an agent works an issue. Appending does
+// not change the issue (no seq bump); a `run_log.appended` realtime event
+// says the log grew.
+
+export interface IssueLogLine {
+  id: number;
+  ts: string;
+  source: string;
+  text: string;
+}
+
+/** The newest lines in chronological order, the ones after `after`, or the
+ *  ones before `before`. */
+export async function listIssueLog(
+  issueId: number,
+  window: { after?: number; before?: number; limit?: number } = {},
+) {
+  const query = new URLSearchParams(
+    Object.entries(window).map(([key, value]) => [key, String(value)]),
+  ).toString();
+  return request<IssueLogLine[]>(`/issues/${issueId}/log${query ? `?${query}` : ""}`);
 }
 
 export async function resolveIssue(identifier: string, signal?: AbortSignal) {

@@ -24,6 +24,7 @@
   import WaitEditor from "../lib/issues/WaitEditor.svelte";
   import PropertyEditor from "../lib/issues/PropertyEditor.svelte"; // LIF-485
   import AssigneeEditor from "../lib/issues/AssigneeEditor.svelte";
+  import RunLog from "../lib/issues/RunLog.svelte";
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon, { statusCssColor, statusLabel } from "../lib/StatusIcon.svelte";
@@ -797,6 +798,13 @@
           Read-only
         </span>
       {/if}
+    {/if}
+  {/snippet}
+
+  {#snippet afterBody()}
+    <!-- The public surface has no run log. -->
+    {#if issue && !inPublicScope()}
+      <RunLog {issue} />
     {/if}
   {/snippet}
 

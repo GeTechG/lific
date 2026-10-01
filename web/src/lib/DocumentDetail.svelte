@@ -112,6 +112,7 @@
     layout = "two-column",
     sidebar,
     belowTitle,
+    afterBody,
     metaFooter,
     // LIF-177: when provided, this replaces the EditableMarkdown body
     // entirely (used by PlanDetail to render its step tree while keeping
@@ -179,6 +180,8 @@
     layout?: "two-column" | "wide";
     sidebar?: Snippet;
     belowTitle?: Snippet;
+    /** Rendered between the body's attachments and the activity timeline. */
+    afterBody?: Snippet;
     metaFooter?: Snippet;
     breadcrumbExtra?: Snippet;
     bodyContent?: Snippet;
@@ -492,6 +495,8 @@
       refreshKey={attachmentRefresh}
     />
   {/if}
+
+  {#if afterBody}{@render afterBody()}{/if}
 
   {#if activity && activity.length > 0}
     <ActivityTimeline items={activity} />
