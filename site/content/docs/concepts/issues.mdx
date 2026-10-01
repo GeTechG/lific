@@ -24,13 +24,14 @@ The number in an identifier counts up within its project. A number is not handed
 
 ## Status
 
-Lific has five fixed statuses. Three are open and two are closed, and `done` is the only one with side effects.
+Lific has six fixed statuses. Four are open and two are closed, and `done` is the only one with side effects.
 
 | Status | Meaning | Open or closed |
 | --- | --- | --- |
 | `backlog` | Recorded, not yet planned. | Open |
 | `todo` | Planned, not started. | Open |
 | `active` | Someone is working on it. | Open |
+| `in_review` | Work is finished and waiting for review or merge. | Open |
 | `done` | Finished. | Closed |
 | `cancelled` | Will not be done. | Closed |
 
@@ -88,11 +89,11 @@ An issue can wait on a given person once and on a given window once. A wait's no
 
 Two filters answer "what can be worked on now" without walking the relation graph yourself. Both exist on the MCP `list_issues` tool and the REST issue list; the CLI has `lific issue list --workable`.
 
-`workable=true` returns issues that are open (not `done` or `cancelled`), whose blocking issues are all `done`, and that have no holding wait. A deleted blocker no longer counts.
+`workable=true` returns issues that are open and not `in_review` (so not `done` or `cancelled` either), whose blocking issues are all `done`, and that have no holding wait. A deleted blocker no longer counts.
 
 `blocked=true` returns issues with at least one blocking issue that is not `done`, or at least one holding wait. It does not look at the issue's own status, so a closed issue with an open blocker still appears.
 
-A blocker that was `cancelled` still blocks. That is deliberate: cancelling the prerequisite does not make the dependent work possible. When the dependency no longer matters, remove the `blocks` relation.
+An `in_review` issue is left out because there is nothing to pick up, but it still blocks what it blocks until it is `done`. A blocker that was `cancelled` still blocks. That is deliberate: cancelling the prerequisite does not make the dependent work possible. When the dependency no longer matters, remove the `blocks` relation.
 
 ## Deleting and restoring
 

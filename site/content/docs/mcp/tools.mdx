@@ -39,12 +39,12 @@ Lists issues in one project, or across the projects of the people you name with 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `project` | `string` | No | Project identifier, e.g. `APP`. Falls back to the repository binding; required on an unbound session unless `members` or `roles` is given. |
-| `status` | `string` | No | `backlog`, `todo`, `active`, `done` or `cancelled`. |
+| `status` | `string` | No | `backlog`, `todo`, `active`, `in_review`, `done` or `cancelled`. |
 | `statuses` | `string[]` | No | Several statuses at once, or `all`. Cannot be combined with `status` or be empty. |
 | `priority` | `string` | No | `urgent`, `high`, `medium`, `low` or `none`. |
 | `module` | `string` | No | Module name. |
 | `label` | `string` | No | Label name. |
-| `workable` | `boolean` | No | `true` returns open issues (not `done` or `cancelled`) whose blockers are all `done` and that have no wait still holding. |
+| `workable` | `boolean` | No | `true` returns open issues that are not `in_review` (so not `done` or `cancelled` either) whose blockers are all `done` and that have no wait still holding. |
 | `blocked` | `boolean` | No | `true` returns issues with at least one blocker that is not `done`, or a wait still holding, whatever their own status. Each row lists its open blockers as `blocked_by:APP-3,APP-7`. |
 | `created_since` | `string` | No | ISO date or datetime, inclusive, e.g. `2026-06-01`. |
 | `created_until` | `string` | No | ISO date or datetime, exclusive. |
@@ -127,7 +127,7 @@ Creates an issue, or up to 50 at once, and returns the new identifiers.
 | `project` | `string` | No | Project identifier. Falls back to the repository binding; required on an unbound session. |
 | `title` | `string` | Unless `issues` is given | Issue title. |
 | `description` | `string` | No | Markdown. |
-| `status` | `string` | No | `backlog` (default), `todo`, `active`, `done` or `cancelled`. |
+| `status` | `string` | No | `backlog` (default), `todo`, `active`, `in_review`, `done` or `cancelled`. |
 | `priority` | `string` | No | `urgent`, `high`, `medium`, `low` or `none` (default). |
 | `module` | `string` | No | Module name. |
 | `labels` | `string[]` | No | Label names. A name that matches no label in the project is ignored. |
@@ -150,7 +150,7 @@ Changes the fields you pass and leaves the rest alone. Text fields are replaced 
 | `identifier` | `string` | Yes | Issue identifier, e.g. `PRO-42`. |
 | `title` | `string` | No | New title. |
 | `description` | `string` | No | New Markdown description. |
-| `status` | `string` | No | `backlog`, `todo`, `active`, `done` or `cancelled`. |
+| `status` | `string` | No | `backlog`, `todo`, `active`, `in_review`, `done` or `cancelled`. |
 | `priority` | `string` | No | `urgent`, `high`, `medium`, `low` or `none`. |
 | `module` | `string` | No | Module name. Pass `""` to unassign. |
 | `labels` | `string[]` | No | Replaces the whole label set. |
@@ -553,6 +553,7 @@ Sections follow in this order, and a section with nothing to report is left out:
 | Workable, not yet active | Issues ready to start, highest priority first. Active issues have their own section. |
 | Key pages, or recently updated pages | Identifier, title, `seq`, size in characters, and whether the page changed since the cursor (or when it was last updated). Page bodies are never included. A page that does not exist and one you cannot view both read `not found`. |
 | Active | Active issues, highest priority first. |
+| In review | `in_review` issues: finished work waiting on review or merge. They are not workable. |
 
 Issue sections show up to 8 lines, plans up to 5, each kind of change up to 5, and titles are cut at 80 characters. If the whole response is still over 6,000 characters, lines are dropped from the longest section until it fits. A section that shows fewer items than it has ends with how many were left out and the call that lists them all, such as `(+12 more: list_issues(project='APP', blocked=true))`. Issue and plan counts stop at 100; `100+` means at least that many.
 

@@ -19,7 +19,7 @@ Every query parameter is optional:
 | `status`, `priority` | One exact value. |
 | `module_id` | Only this module. |
 | `label` | Only issues carrying this label name. |
-| `workable` | `true`: open issues whose blockers are all `done` and that have no wait still holding. |
+| `workable` | `true`: open issues, other than `in_review` ones, whose blockers are all `done` and that have no wait still holding. |
 | `blocked` | `true`: issues with at least one blocker that is not `done`, or a wait still holding, whatever their own status. |
 | `created_since`, `updated_since` | Inclusive lower bound, a date or date-time. |
 | `created_until`, `updated_until` | Exclusive upper bound. |
