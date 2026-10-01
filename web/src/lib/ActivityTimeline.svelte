@@ -101,7 +101,9 @@
       case "delete":
         return a.entity_type === "comment" ? "deleted a comment" : `deleted ${a.entity_type}`;
       case "update":
-        return a.entity_type === "comment" ? "edited a comment" : `changed ${a.field}`;
+        return a.entity_type === "comment"
+          ? "edited a comment"
+          : `changed ${(a.field ?? "").replace(/^property:/, "property ")}`;
       case "attach":
         return "added label";
       case "detach":

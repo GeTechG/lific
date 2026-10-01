@@ -44,6 +44,7 @@ export interface IssueRow {
   /** LIF-484: user and date blockers. Omitted when the issue has none; a
    *  wait added or cleared re-delivers the row at a new seq. */
   waits?: IssueWait[];
+  properties?: Record<string, string>;
 }
 
 /** A live page row. Note the field the wire shape does NOT carry: no

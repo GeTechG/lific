@@ -21,7 +21,8 @@
   } from "../lib/api";
   import DocumentDetail from "../lib/DocumentDetail.svelte";
   import LabelEditor from "../lib/LabelEditor.svelte";
-  import WaitEditor from "../lib/issues/WaitEditor.svelte"; // LIF-485
+  import WaitEditor from "../lib/issues/WaitEditor.svelte";
+  import PropertyEditor from "../lib/issues/PropertyEditor.svelte"; // LIF-485
   import ProjectIcon from "../lib/ProjectIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import StatusIcon, { statusCssColor, statusLabel } from "../lib/StatusIcon.svelte";
@@ -988,6 +989,21 @@
             onChange={(next) => {
               if (!issue) return;
               issue = { ...issue, waits: next };
+              refreshActivity();
+            }}
+          />
+
+          <div class="border-t border-[var(--border)] -mx-5 px-5 py-0 my-1"></div>
+        {/if}
+
+        <!-- Viewers see the field only when the issue has properties. -->
+        {#if Object.keys(issue.properties ?? {}).length || editable}
+          <PropertyEditor
+            issueId={issue.id}
+            properties={issue.properties ?? {}}
+            {editable}
+            onChange={(next) => {
+              issue = next;
               refreshActivity();
             }}
           />

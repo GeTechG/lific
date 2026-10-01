@@ -850,6 +850,8 @@ export interface Issue {
   created_at: string;
   updated_at: string;
   labels: string[];
+  /** Free-form text properties by name; `{}` when the issue has none. */
+  properties?: Record<string, string>;
   blocks?: string[];
   blocked_by?: string[];
   relates_to?: string[];
@@ -983,6 +985,9 @@ export interface UpdateIssueInput {
   module_id?: number;
   sort_order?: number;
   labels?: string[];
+  /** Property delta, applied server-side: other properties are kept. */
+  set_properties?: Record<string, string>;
+  unset_properties?: string[];
 }
 
 export async function updateIssue(id: number, input: UpdateIssueInput) {
