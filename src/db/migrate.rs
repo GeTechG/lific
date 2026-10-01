@@ -296,6 +296,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue assignee",
         include_str!("../../migrations/060_issue_assignee.sql"),
     ),
+    (
+        61,
+        "issue run log",
+        include_str!("../../migrations/061_issue_log.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -1127,6 +1132,47 @@ mod tests {
             conn.execute("UPDATE issues SET assignee_id = 99 WHERE id = 1", [])
                 .is_err(),
             "the assignee must be a real account"
+        );
+    }
+
+    /// Migration 061 adds the run log next to existing issues: they keep
+    /// their seq, and the new table carries no trigger that could bump it.
+    #[test]
+    fn issue_log_upgrade_adds_a_trigger_free_table_beside_existing_issues() {
+        let conn = migrated_up_to(61);
+        conn.execute_batch(
+            "INSERT INTO users(id,username,email,password_hash,is_admin) VALUES(1,'root','r@t','x',1);
+             INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title,status,assignee_id) VALUES(1,1,1,'Old','in_review',1);
+             INSERT INTO issue_properties(issue_id,name,value) VALUES(1,'footprint','src/');",
+        )
+        .unwrap();
+        let seq_before = seq_of(&conn, "issues", 1);
+
+        run(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO issue_log(issue_id,source,text) VALUES(1,'run-1','hello')",
+            [],
+        )
+        .unwrap();
+        let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
+        assert_eq!(issue.status, Status::InReview);
+        assert_eq!(issue.assignment.assignee.as_deref(), Some("root"));
+        assert_eq!(issue.properties["footprint"], "src/");
+        assert!(issue.last_log_at.is_some());
+        assert_eq!(seq_of(&conn, "issues", 1), seq_before);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name='issue_log'"
+            ),
+            0
+        );
+        assert!(
+            conn.execute("INSERT INTO issue_log(issue_id,text) VALUES(99,'x')", [])
+                .is_err(),
+            "a line belongs to a real issue"
         );
     }
 

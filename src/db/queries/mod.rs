@@ -5,6 +5,7 @@ pub(crate) mod briefing;
 pub(crate) mod changes;
 pub(crate) mod comments;
 pub(crate) mod insights;
+pub(crate) mod issue_log;
 mod issues;
 pub(crate) mod members;
 mod pages;

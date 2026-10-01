@@ -203,6 +203,66 @@ pub(super) async fn restore_issue_handler(
     Ok(Json(issue))
 }
 
+#[derive(serde::Deserialize)]
+pub(super) struct IssueLogQuery {
+    after: Option<i64>,
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// An issue's run log, oldest line first: the newest `limit` lines, the
+/// ones before `before`, or the next ones after `after`.
+pub(super) async fn list_issue_log(
+    State(db): State<DbPool>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+    Query(q): Query<IssueLogQuery>,
+) -> Result<Json<Vec<IssueLogLine>>, LificError> {
+    let project_id = with_read(&db, |conn| crate::db::queries::issue_project_id(conn, id))?;
+    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
+    with_read(&db, |conn| {
+        crate::db::queries::issue_log::list(
+            conn,
+            id,
+            crate::db::queries::issue_log::LogWindow {
+                after: q.after,
+                before: q.before,
+                limit: q.limit,
+            },
+        )
+    })
+    .map(Json)
+}
+
+/// Append lines to an issue's run log. The issue row is not written: its
+/// `seq` and `updated_at` stay put, and the only event is the advisory
+/// `run_log.appended`, so nobody's `expected_seq` is invalidated.
+pub(super) async fn append_issue_log(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+    Json(input): Json<AppendIssueLog>,
+) -> Result<Json<Vec<IssueLogLine>>, LificError> {
+    let project_id = with_read(&db, |conn| crate::db::queries::issue_project_id(conn, id))?;
+    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
+    let lines = with_write(&db, |conn| {
+        // The issue may have been deleted since the gate read it.
+        crate::db::queries::issue_project_id(conn, id)?;
+        crate::db::queries::issue_log::append(conn, id, &input.source, &input.lines)
+    })?;
+    if let Some(last) = lines.last() {
+        realtime.send(RealtimeEvent::RunLogAppended {
+            log: crate::realtime::RunLogAppended {
+                project_id,
+                issue_id: id,
+                last_id: last.id,
+            },
+        });
+    }
+    Ok(Json(lines))
+}
+
 /// LIF-363: every relation edge inside one project, in one round trip. Feeds
 /// the dependency-graph view; the client filters to `blocks` edges itself so
 /// a future view mode (e.g. relates_to clusters) needs no new endpoint.
@@ -655,6 +715,132 @@ mod tests {
             .map(|candidate| candidate["username"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["admin", "lead", "maintainer", "viewer"]);
+    }
+
+    #[tokio::test]
+    async fn run_log_lines_append_and_page_without_touching_the_issue() {
+        let test = test_app_with_realtime();
+        let app = &test.app;
+        let (project_id, _) = seed_project(app).await;
+        let (id, seq) = seed_issue_with_seq(app, project_id, "Worked on").await;
+        let cursor = body_of(json_get(app, &format!("/api/projects/{project_id}/changes")).await)
+            .await["cursor"]
+            .clone();
+        let mut events = test.realtime.subscribe();
+
+        let resp = json_post(
+            app,
+            &format!("/api/issues/{id}/log"),
+            serde_json::json!({"source": "run-7", "lines": ["cloning", "testing", "pushing"]}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let appended = body_of(resp).await;
+        let appended = appended.as_array().unwrap();
+        assert_eq!(appended.len(), 3);
+        assert_eq!(appended[0]["source"], "run-7");
+        assert_eq!(appended[2]["text"], "pushing");
+        assert!(appended[0]["ts"].is_string());
+
+        // The one event names the log under `log`, so no view takes it for
+        // a change to the issue row, and it carries no seq.
+        let event = next_event(&mut events).await;
+        assert_eq!(event["type"], "run_log.appended");
+        assert_eq!(event["log"]["issue_id"], id);
+        assert_eq!(event["log"]["project_id"], project_id);
+        assert_eq!(event["log"]["last_id"], appended[2]["id"]);
+        for absent in ["project_id", "issue_id", "seq"] {
+            assert!(event.get(absent).is_none(), "{event}");
+        }
+
+        let log = |query: &str| {
+            let path = format!("/api/issues/{id}/log{query}");
+            async move { body_of(json_get(app, &path).await).await }
+        };
+        assert_eq!(log("").await.as_array().unwrap().len(), 3);
+        let after = log(&format!("?after={}", appended[0]["id"])).await;
+        assert_eq!(after[0]["text"], "testing");
+        assert_eq!(after.as_array().unwrap().len(), 2);
+        let newest = log("?limit=1").await;
+        assert_eq!(newest[0]["text"], "pushing");
+        let older = log(&format!("?before={}&limit=1", appended[2]["id"])).await;
+        assert_eq!(older[0]["text"], "testing");
+
+        // Nothing about the issue moved: same seq, an empty change feed, no
+        // activity entry, and a write guarded by the old seq still lands.
+        let fresh = body_of(json_get(app, &format!("/api/issues/{id}")).await).await;
+        assert_eq!(fresh["seq"], seq);
+        assert_eq!(fresh["last_log_at"], appended[2]["ts"]);
+        let changes = body_of(
+            json_get(
+                app,
+                &format!("/api/projects/{project_id}/changes?since={cursor}"),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(changes["changes"], serde_json::json!([]));
+        let feed = body_of(json_get(app, &format!("/api/issues/{id}/activity")).await).await;
+        assert_eq!(feed["items"].as_array().unwrap().len(), 1, "{feed}");
+        let resp = json_put(
+            app,
+            &format!("/api/issues/{id}"),
+            serde_json::json!({"title": "Edited", "expected_seq": seq}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = json_post(
+            app,
+            "/api/issues/9999/log",
+            serde_json::json!({"lines": ["x"]}),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let resp = json_post(
+            app,
+            &format!("/api/issues/{id}/log"),
+            serde_json::json!({"lines": ["", "  "]}),
+        )
+        .await;
+        assert_eq!(body_of(resp).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_reads_the_run_log_but_cannot_write_it() {
+        let (db, _admin, _lead, maintainer, viewer, non_member, project_id) =
+            setup_membership_test();
+        let issue = body_of(
+            json_post(
+                &app_as_user(db.clone(), &maintainer),
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Worked on"}),
+            )
+            .await,
+        )
+        .await;
+        let path = format!("/api/issues/{}/log", issue["id"]);
+        let body = serde_json::json!({"lines": ["hello"]});
+        let resp = json_post(&app_as_user(db.clone(), &maintainer), &path, body.clone()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let viewer_app = app_as_user(db.clone(), &viewer);
+        assert_eq!(
+            json_post(&viewer_app, &path, body.clone()).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        let read = body_of(json_get(&viewer_app, &path).await).await;
+        assert_eq!(read[0]["text"], "hello");
+
+        let outsider = app_as_user(db, &non_member);
+        assert_eq!(
+            json_get(&outsider, &path).await.status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            json_post(&outsider, &path, body).await.status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

@@ -8457,6 +8457,7 @@ mod tests {
             labels: vec!["bug".into()],
             properties: Default::default(),
             assignment: Default::default(),
+            last_log_at: None,
             blocks: vec!["T-2".into()],
             blocked_by: vec![],
             relates_to: vec![],

@@ -402,6 +402,9 @@ fn rest_manifest() -> HashMap<(&'static str, &'static str), Classification> {
         (("POST", "/api/issues/reverse"), Gated(Maintainer)),
         // ── Activity / export (all read-side, Viewer) ──
         (("GET", "/api/issues/{id}/activity"), Gated(Viewer)),
+        // ── Run log: read like the issue, written like an edit ──
+        (("GET", "/api/issues/{id}/log"), Gated(Viewer)),
+        (("POST", "/api/issues/{id}/log"), Gated(Maintainer)),
         (("GET", "/api/pages/{id}/activity"), Gated(Viewer)),
         (("GET", "/api/projects/{id}/activity"), Gated(Viewer)),
         (("GET", "/api/projects/{id}/activity/actors"), Gated(Viewer)),

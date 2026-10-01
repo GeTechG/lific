@@ -39,6 +39,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                 labels: Vec::new(),
                 properties: Default::default(),
                 assignment: Default::default(),
+                last_log_at: None,
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
                 relates_to: Vec::new(),
@@ -147,6 +148,7 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
     issue.assignment = super::assignee::assignments_by_issue(conn, &[id])?
         .remove(&id)
         .unwrap_or_default();
+    issue.last_log_at = super::issue_log::last_log_at_by_issue(conn, &[id])?.remove(&id);
 
     Ok(issue)
 }
@@ -491,6 +493,7 @@ pub fn list_issues_page(
             labels: Vec::new(),
             properties: Default::default(),
             assignment: Default::default(),
+            last_log_at: None,
             blocks: Vec::new(),
             blocked_by: Vec::new(),
             relates_to: Vec::new(),
@@ -577,10 +580,12 @@ pub fn list_issues_page(
         let mut waits = super::waits::waits_by_issue(conn, &ids)?;
         let mut properties = super::properties::properties_by_issue(conn, &ids)?;
         let mut assignments = super::assignee::assignments_by_issue(conn, &ids)?;
+        let mut last_log_at = super::issue_log::last_log_at_by_issue(conn, &ids)?;
         for issue in &mut issues {
             issue.waits = waits.remove(&issue.id).unwrap_or_default();
             issue.properties = properties.remove(&issue.id).unwrap_or_default();
             issue.assignment = assignments.remove(&issue.id).unwrap_or_default();
+            issue.last_log_at = last_log_at.remove(&issue.id);
         }
     }
 

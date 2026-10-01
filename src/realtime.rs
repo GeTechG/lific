@@ -416,8 +416,22 @@ pub enum RealtimeEvent {
     IssueLinked { project_id: i64, issue_id: i64 },
     #[serde(rename = "issue.unlinked")]
     IssueUnlinked { project_id: i64, issue_id: i64 },
+    /// Lines were appended to an issue's run log. The ids sit under `log`
+    /// rather than at the top level on purpose: clients treat any event
+    /// carrying `project_id` or `issue_id` as "this row changed, refetch
+    /// it", and a log line changes no row. Never stamped with a seq.
+    #[serde(rename = "run_log.appended")]
+    RunLogAppended { log: RunLogAppended },
     #[serde(rename = "activity.baseline")]
     ActivityBaseline { day_count: i64 },
+}
+
+/// Which run log grew, and the id of its newest line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunLogAppended {
+    pub project_id: i64,
+    pub issue_id: i64,
+    pub last_id: i64,
 }
 
 pub async fn serve_socket(
@@ -1156,6 +1170,7 @@ impl RealtimeEvent {
             | Self::IssueLinked { project_id, .. }
             | Self::IssueUnlinked { project_id, .. }
             | Self::SyncRequired { project_id } => Some(*project_id),
+            Self::RunLogAppended { log } => Some(log.project_id),
             Self::ResyncRequired
             | Self::ProjectsReordered
             | Self::ProjectGroupsChanged

@@ -302,6 +302,10 @@ pub struct Issue {
     /// present, `null` when nobody is assigned.
     #[serde(flatten)]
     pub assignment: Assignment,
+    /// When the newest run-log line was written (populated on read); absent
+    /// for an issue that has none. A new line does not advance `seq`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_log_at: Option<String>,
     /// Relations (populated on read for get_issue)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
@@ -321,6 +325,24 @@ pub struct Issue {
     /// and list). Empty on the public surface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub waits: Vec<IssueWait>,
+}
+
+/// One line of an issue's run log.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueLogLine {
+    pub id: i64,
+    pub ts: String,
+    /// A short label for what wrote the line, such as a run id. May be "".
+    pub source: String,
+    pub text: String,
+}
+
+/// `POST /api/issues/{id}/log` body.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct AppendIssueLog {
+    #[serde(default)]
+    pub source: String,
+    pub lines: Vec<String>,
 }
 
 /// An issue's assignee as every issue representation carries it: the
@@ -1338,6 +1360,10 @@ pub struct IssueChange {
     /// The assignee, one grouped query per page.
     #[serde(flatten)]
     pub assignment: Assignment,
+    /// When the newest run-log line was written, as of this read. A new
+    /// line does not re-deliver the row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_log_at: Option<String>,
     /// LIF-484: user and date blockers, one grouped query per page. Adding
     /// or clearing one advances the issue's seq, so a replica sees it.
     #[serde(skip_serializing_if = "Vec::is_empty")]

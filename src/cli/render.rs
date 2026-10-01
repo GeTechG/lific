@@ -584,6 +584,7 @@ mod tests {
             labels: Vec::new(),
             properties: Default::default(),
             assignment: Default::default(),
+            last_log_at: None,
             blocks: Vec::new(),
             blocked_by: Vec::new(),
             relates_to: Vec::new(),

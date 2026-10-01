@@ -89,6 +89,8 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
     issue.properties.clear();
     // The assignee names an account, like a wait.
     issue.assignment = Default::default();
+    // The run log is not exposed publicly, nor is the fact that one exists.
+    issue.last_log_at = None;
     for relations in [
         &mut issue.blocks,
         &mut issue.blocked_by,
@@ -106,6 +108,7 @@ fn scrub_issue_change(issue: &mut crate::db::models::IssueChange) {
     issue.waits.clear();
     issue.properties.clear();
     issue.assignment = Default::default();
+    issue.last_log_at = None;
 }
 
 /// Keep the display name, drop the account behind it.

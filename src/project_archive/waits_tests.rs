@@ -296,3 +296,27 @@ fn an_archive_from_before_assignees_still_imports() {
     let (dest, _dest_dir, dest_store) = destination();
     import(&dest, &dest_store, &path, "owner").unwrap();
 }
+
+#[test]
+fn the_run_log_stays_out_of_archives_and_markdown_exports() {
+    let (source, dir, store) = source();
+    {
+        let conn = source.write().unwrap();
+        queries::issue_log::append(&conn, 30, "run-7", &["SECRET RUN OUTPUT".to_string()]).unwrap();
+    }
+    let archive = dir.path().join("log.tar.gz");
+    export(&source, &store, "LIF", &archive).unwrap();
+    let manifest = serde_json::to_string(&stage(&archive).unwrap().manifest.tables).unwrap();
+    assert!(!manifest.contains("SECRET RUN OUTPUT"));
+    let (dest, _dest_dir, dest_store) = destination();
+    import(&dest, &dest_store, &archive, "owner").unwrap();
+    let conn = dest.read().unwrap();
+    let lines: i64 = conn
+        .query_row("SELECT count(*) FROM issue_log", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(lines, 0);
+
+    let conn = source.read().unwrap();
+    let markdown = crate::export::export_issue(&conn, "LIF-1", None).unwrap();
+    assert!(!format!("{markdown:?}").contains("SECRET RUN OUTPUT"));
+}

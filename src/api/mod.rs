@@ -179,6 +179,11 @@ fn router_impl(
         )
         // Activity (audit log read surface — LIF-156)
         .route("/api/issues/{id}/activity", get(activity::issue_activity))
+        // The run log: lines a scheduler appends while an agent works.
+        .route(
+            "/api/issues/{id}/log",
+            get(issues::list_issue_log).post(issues::append_issue_log),
+        )
         .route("/api/pages/{id}/activity", get(activity::page_activity))
         .route(
             "/api/projects/{id}/activity",
