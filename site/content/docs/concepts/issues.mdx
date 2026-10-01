@@ -15,6 +15,7 @@ An issue is one piece of work inside a project. It is identified by the project'
 | `priority` | `urgent`, `high`, `medium`, `low` or `none`. New issues start at `none`. |
 | `module` | At most one [module](/docs/concepts/modules-and-labels) from the same project. |
 | `labels` | Any number of the project's [labels](/docs/concepts/modules-and-labels). |
+| `properties` | Free-form `name: value` text pairs. See [Properties](#properties). |
 | `start_date`, `target_date` | Optional calendar dates, written `YYYY-MM-DD`. |
 | `created_at`, `updated_at` | Set by Lific. Adding a comment or changing labels also moves `updated_at`. |
 
@@ -47,6 +48,18 @@ The [activity log](/docs/concepts/comments-and-activity) records every status ch
 ## Priority
 
 Priority is for sorting and filtering. When issues are sorted by priority the order is `urgent`, `high`, `medium`, `low`, then `none`. Lific attaches no other behavior to it.
+
+## Properties
+
+An issue can carry free-form text properties: `name` and `value` pairs with no per-project schema. Use them for small pieces of machine-readable state that would otherwise be a line in the description, such as the paths a change touches or a pull request number.
+
+- A name is 1 to 64 characters from `a-z`, `0-9`, `_` and `-`, starting with a letter or digit.
+- A value is any non-empty text up to 4,096 bytes. To clear a property, unset it.
+- An issue holds at most 64 properties.
+
+Properties are written as a delta: you name what to set and what to unset, and everything else stays as it is, so two writers changing different properties do not overwrite each other. Unsetting a name the issue does not have changes nothing. The [activity log](/docs/concepts/comments-and-activity) records each changed property as a change to `property:<name>`.
+
+Reads show them as `properties`, an object that is empty when the issue has none. They travel with the trash, backups, project archives and Markdown exports, and are left out of [public projects](/docs/concepts/projects). Search does not look inside them. Setting them takes the same role as editing the issue.
 
 ## Relations
 

@@ -335,6 +335,8 @@ lific issue unlink <SOURCE> <TARGET>
 | `-l, --label <LABEL>` | For `list`: shows only issues with this label. |
 | `-l, --labels <LABELS>` | For `create` and `update`: comma-separated label names. On `update` the list replaces all of the issue's labels. |
 | `--add-label <NAME>`, `--remove-label <NAME>` | For `update`: add or remove single labels and keep the rest. Repeatable, or comma-separated. Adding a label the issue has, or removing one it lacks, changes nothing. Neither combines with `--labels`. |
+| `--set <NAME=VALUE>` | For `create` and `update`: set a [property](/docs/concepts/issues#properties) and keep the rest. Repeatable. The value is everything after the first `=`. |
+| `--unset <NAME>` | For `update`: remove a property. Repeatable. Removing one the issue lacks changes nothing. |
 | `--type <TYPE>` | For `link`: `blocks` (the default), `relates_to` or `duplicate`, read from `<SOURCE>` to `<TARGET>`. |
 | `-w, --workable` | For `list`: shows only open issues whose blockers are all `done`. |
 | `--limit <LIMIT>` | For `list`: the most issues to show. 50 by default, at most 500. |

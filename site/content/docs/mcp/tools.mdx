@@ -96,7 +96,7 @@ With `members`, the listing matches the web home page's "My active issues": `act
 
 ### `get_issue`
 
-Returns one issue: title, status, priority, module, labels, checklist progress, relations, waits, description and a window of its comments.
+Returns one issue: title, status, priority, module, labels, properties (one `Property name: value` line each), checklist progress, relations, waits, description and a window of its comments.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -133,6 +133,7 @@ Creates an issue, or up to 50 at once, and returns the new identifiers.
 | `labels` | `string[]` | No | Label names. A name that matches no label in the project is ignored. |
 | `start_date` | `string` | No | ISO 8601 date, e.g. `2026-06-01`. |
 | `target_date` | `string` | No | ISO 8601 date, e.g. `2026-06-15`. |
+| `set_properties` | `object` | No | Text [properties](/docs/concepts/issues#properties) to set, as `{name: value}`. |
 | `issues` | `object[]` | No | A batch of 1 to 50 issues. Each item takes `title` (required) and any of the fields above except `project`. |
 
 Attachment links (`/api/attachments/12`) in the description are linked to the new issue.
@@ -156,6 +157,8 @@ Changes the fields you pass and leaves the rest alone. Text fields are replaced 
 | `labels` | `string[]` | No | Replaces the whole label set. |
 | `start_date` | `string` | No | ISO 8601 date. |
 | `target_date` | `string` | No | ISO 8601 date. |
+| `set_properties` | `object` | No | Text [properties](/docs/concepts/issues#properties) to set, as `{name: value}`. Properties not named are kept. |
+| `unset_properties` | `string[]` | No | Property names to remove. A name the issue lacks is ignored. |
 | `expected_seq` | `integer` | No | Concurrency check. The update is refused if the issue's `seq` is no longer this value. Omit for last-writer-wins. |
 | `evidence` | `string` | No | How the work was verified, in Markdown. Only with `status: "done"` on an issue that is not already done. Saved as a verification comment. |
 
