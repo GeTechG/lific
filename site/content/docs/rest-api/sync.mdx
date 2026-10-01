@@ -57,7 +57,7 @@ Returns `changes`, `cursor` and `has_more`. `cursor` is the highest `seq` in `ch
 
 Every change has `kind` (`issue`, `page` or `comment`), `seq`, `deleted` and `id`. A change with `deleted: true` carries nothing else: remove your copy. Otherwise it also has:
 
-- **issue:** `identifier`, `title`, `status`, `priority`, `module_id`, `sort_order`, `start_date`, `target_date`, `created_at`, `updated_at`, `preview`, `labels`, `properties`, `assignee` (with `assignee_display_name` and `assignee_is_bot` when assigned), and `waits` when the issue has any (see [waits](/docs/rest-api/work#waits))
+- **issue:** `identifier`, `title`, `status`, `priority`, `module_id`, `sort_order`, `start_date`, `target_date`, `created_at`, `updated_at`, `preview`, `labels`, `properties`, `assignee` (with `assignee_display_name` and `assignee_is_bot` when assigned), `last_log_at` when the issue has [run log](/docs/rest-api/work#run-log) lines (as of this read; a new line does not re-deliver the row), and `waits` when the issue has any (see [waits](/docs/rest-api/work#waits))
 - **page:** `identifier`, `title`, `status`, `folder_id`, `pinned`, `created_at`, `updated_at`, `preview`, `labels`
 - **comment:** `issue_id`, `page_id`, `user_id`, `username`, `created_at`, `updated_at`, `comment_kind` (`comment` or `verification`; not `kind`, which already names the change type)
 
@@ -108,6 +108,7 @@ Events are JSON objects with a `type`:
 | `issue.created`, `issue.updated`, `issue.deleted` | `project_id`, `issue_id`, `seq` | An issue changed. Restoring from the trash sends `issue.created`. |
 | `issue.linked`, `issue.unlinked` | `project_id`, `issue_id` | A relation changed. Sent once for each issue involved. |
 | `project.created`, `project.updated`, `project.deleted` | `project_id`, sometimes `seq` | `project.updated` also covers pages, plans, comments, modules, labels, folders and attachments in the project. |
+| `run_log.appended` | `log`: `project_id`, `issue_id`, `last_id` | Lines were appended to an issue's [run log](/docs/rest-api/work#run-log). Read them with `GET /api/issues/{id}/log?after=`. The issue itself did not change, which is why the ids are nested and there is no `seq`. Not sent for lines written straight to the database with `--backend sql`. |
 | `projects.reordered` | none | Your sidebar order changed, from another tab or device. |
 | `project_groups.changed` | none | Your sidebar groups changed. |
 | `resync.required` | none | Refetch everything you show, for example after an administrator changed `authz_enforced`. |

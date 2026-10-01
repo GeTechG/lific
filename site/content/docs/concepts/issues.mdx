@@ -117,6 +117,18 @@ Two filters answer "what can be worked on now" without walking the relation grap
 
 An `in_review` issue is left out because there is nothing to pick up, but it still blocks what it blocks until it is `done`. A blocker that was `cancelled` still blocks. That is deliberate: cancelling the prerequisite does not make the dependent work possible. When the dependency no longer matters, remove the `blocks` relation.
 
+## Run log
+
+An issue can carry a run log: short text lines that a scheduler appends while an agent works the issue, so that a person watching the web UI can see what the agent is doing. The issue page shows the log live, and the board and the issue list mark an issue whose newest line is less than two minutes old.
+
+The run log is not the comment thread and not the [activity log](/docs/concepts/comments-and-activity). Appending a line does not count as a change to the issue: `seq` and `updated_at` stay as they were, nothing appears in the change feed, in activity or in search, and an edit that sends `expected_seq` is not refused because the agent logged a line in between. Reads show only `last_log_at`, the time of the newest line.
+
+- Each line has an `id` that only grows, a timestamp, a `source` label of up to 64 characters (a run id, say) and the `text`.
+- A line longer than 2,000 characters is cut, and an empty one is skipped.
+- An issue keeps its newest 2,000 lines. Older ones are dropped as new ones arrive.
+
+Reading takes the viewer role and appending the maintainer role. The log travels with backups and stays with the issue through the trash. It is left out of project archives, Markdown exports and [public projects](/docs/concepts/projects). There are no MCP tools for it; write it with [`lific issue log`](/docs/cli) or the [REST API](/docs/rest-api/work#run-log).
+
 ## Deleting and restoring
 
 Deleting an issue moves it to the trash, along with its comments. It disappears from lists, search, boards and [public projects](/docs/public-projects) straight away. For the next 30 days, a maintainer can restore it with `POST /api/issues/{id}/restore`, and its comments come back with it. After that the retention sweep removes it permanently. Change the window with `trash_days` in the [`[retention]`](/docs/configuration#retention) section of the configuration.

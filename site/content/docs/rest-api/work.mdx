@@ -172,6 +172,27 @@ The server's calendar day and its offset from UTC, which decide whether a date w
 
 `utc_offset_minutes` is minutes east of UTC. A client that works out wait states itself should compute today at this offset, not in its own timezone, so that it agrees with the server. The web UI does this so an open tab turns over at the server's midnight.
 
+## Run log
+
+Lines a scheduler appends while an agent works an issue; see [Run log](/docs/concepts/issues#run-log). Appending does not change the issue: its `seq` and `updated_at` stay, and `/changes` does not re-deliver it. A line is `id`, `ts`, `source` and `text`.
+
+### GET `/api/issues/{id}/log`
+
+Returns an array of lines, oldest first. **Viewer.** With no parameters, the newest 200. `after=<id>` returns the lines after that id, for following the log; `before=<id>` returns the ones just before it, for paging back. `limit` is 200 by default and at most 2000.
+
+### POST `/api/issues/{id}/log`
+
+Appends lines. **Maintainer.** Body: `lines` (an array of strings) and optionally `source` (a label of up to 64 characters). Empty lines are skipped, a line is cut at 2,000 characters, and the issue keeps its newest 2,000 lines. Returns the lines as stored.
+
+```bash
+curl -X POST "$LIFIC/api/issues/42/log" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source":"run-7","lines":["cloning the repository","running the tests"]}'
+```
+
+Open sockets on [`/api/events/ws`](/docs/rest-api/sync) receive `run_log.appended`.
+
 ## Comments
 
 Anyone who can read a project can comment in it: **viewer**. On a workspace page, that means an administrator when enforcement is on. Deleting an issue or page takes its comments to the trash with it.

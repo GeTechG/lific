@@ -320,9 +320,17 @@ lific issue create --project <PROJECT> --title <TITLE> [--description <MARKDOWN>
 lific issue update <IDENTIFIER> [--title <TITLE>] [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>] [--add-label <NAME>] [--remove-label <NAME>]
 lific issue link <SOURCE> <TARGET> [--type <TYPE>]
 lific issue unlink <SOURCE> <TARGET>
+lific issue log add <IDENTIFIER> [--source <TEXT>] [--line <TEXT>]...
+lific issue log list <IDENTIFIER> [--after <ID>] [--limit <LIMIT>]
 ```
 
 `get` prints the issue with its description and relations. `update` changes only the fields you pass. `link` relates two issues, which may be in different projects: by default `<SOURCE>` blocks `<TARGET>`. `unlink` removes every relation between the two, in either direction. [Issues](/docs/concepts/issues) explains what each field does.
+
+`log add` appends lines to the issue's [run log](/docs/concepts/issues#run-log): each `--line`, or, with none, each line of standard input. `--source` labels them, for example with a run id. `log list` prints the newest 200 lines, oldest first; `--after <ID>` prints only the lines after that line id, which is how a script follows the log, and `--limit` takes up to 2000. With `--json` both print an array of `{id, ts, source, text}`. Appending is not an edit: it does not change the issue's `seq`.
+
+```shell
+my-agent 2>&1 | lific issue log add APP-42 --source run-7
+```
 
 | Flag | What it does |
 | --- | --- |
