@@ -317,10 +317,12 @@ lific project update <IDENTIFIER> [--name <NAME>] [--description <TEXT>]
 lific issue list --project <PROJECT> [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--label <LABEL>] [--workable] [--limit <LIMIT>]
 lific issue get <IDENTIFIER>
 lific issue create --project <PROJECT> --title <TITLE> [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>]
-lific issue update <IDENTIFIER> [--title <TITLE>] [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>]
+lific issue update <IDENTIFIER> [--title <TITLE>] [--description <MARKDOWN>] [--status <STATUS>] [--priority <PRIORITY>] [--module <MODULE>] [--labels <LABELS>] [--add-label <NAME>] [--remove-label <NAME>]
+lific issue link <SOURCE> <TARGET> [--type <TYPE>]
+lific issue unlink <SOURCE> <TARGET>
 ```
 
-`get` prints the issue with its description and relations. `update` changes only the fields you pass. [Issues](/docs/concepts/issues) explains what each field does.
+`get` prints the issue with its description and relations. `update` changes only the fields you pass. `link` relates two issues, which may be in different projects: by default `<SOURCE>` blocks `<TARGET>`. `unlink` removes every relation between the two, in either direction. [Issues](/docs/concepts/issues) explains what each field does.
 
 | Flag | What it does |
 | --- | --- |
@@ -332,6 +334,8 @@ lific issue update <IDENTIFIER> [--title <TITLE>] [--description <MARKDOWN>] [--
 | `-m, --module <MODULE>` | A module name. With `list`, filters by module. |
 | `-l, --label <LABEL>` | For `list`: shows only issues with this label. |
 | `-l, --labels <LABELS>` | For `create` and `update`: comma-separated label names. On `update` the list replaces all of the issue's labels. |
+| `--add-label <NAME>`, `--remove-label <NAME>` | For `update`: add or remove single labels and keep the rest. Repeatable, or comma-separated. Adding a label the issue has, or removing one it lacks, changes nothing. Neither combines with `--labels`. |
+| `--type <TYPE>` | For `link`: `blocks` (the default), `relates_to` or `duplicate`, read from `<SOURCE>` to `<TARGET>`. |
 | `-w, --workable` | For `list`: shows only open issues whose blockers are all `done`. |
 | `--limit <LIMIT>` | For `list`: the most issues to show. 50 by default, at most 500. |
 
