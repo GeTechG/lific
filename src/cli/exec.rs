@@ -235,6 +235,7 @@ fn issue(
             priority,
             module,
             label,
+            assignee,
             workable,
             limit,
         } => {
@@ -254,6 +255,7 @@ fn issue(
                     priority: Priority::parse_opt(priority.as_deref())?,
                     module_id,
                     label: label.clone(),
+                    assignee: assignee.clone(),
                     workable: if *workable { Some(true) } else { None },
                     limit: *limit,
                     ..Default::default()
@@ -290,6 +292,7 @@ fn issue(
             module,
             labels,
             set,
+            assignee,
         } => {
             let set_properties = parsed_property_sets(set)?;
             let conn = pool.write()?;
@@ -312,6 +315,7 @@ fn issue(
                     priority: priority.parse()?,
                     module_id,
                     labels: label_list,
+                    assignee: assignee.clone(),
                     set_properties,
                     // LIF-409: the description's attachment references are
                     // linked by `create_issue` itself. A direct-SQL caller is
@@ -342,6 +346,8 @@ fn issue(
             remove_label,
             set,
             unset,
+            assignee,
+            unassign,
         } => {
             let set_properties = parsed_property_sets(set)?;
             let conn = pool.write()?;
@@ -378,6 +384,7 @@ fn issue(
                     // skips (no clear), so map Some(id) -> Some(Some(id)).
                     module_id: module_id.map(Some),
                     labels: label_list,
+                    assignee: assignee_edit(assignee, *unassign),
                     // A server-side delta: no read, no `expected_seq`.
                     set_properties,
                     unset_properties: unset.clone(),
@@ -1178,6 +1185,7 @@ mod tests {
                 module: None,
                 labels: None,
                 set: Vec::new(),
+                assignee: None,
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1210,6 +1218,8 @@ mod tests {
                 remove_label: Vec::new(),
                 set: Vec::new(),
                 unset: Vec::new(),
+                assignee: None,
+                unassign: false,
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1239,6 +1249,8 @@ mod tests {
                 remove_label: Vec::new(),
                 set: Vec::new(),
                 unset: Vec::new(),
+                assignee: None,
+                unassign: false,
             },
         };
         run(&pool, &update("in_review"), false, None).unwrap();
@@ -1271,6 +1283,7 @@ mod tests {
                 module: None,
                 labels: None,
                 set: owned(&["footprint=src/a.js, test/", "pr=41"]),
+                assignee: None,
             },
         };
         run(&pool, &create, false, None).unwrap();
@@ -1287,6 +1300,8 @@ mod tests {
                 remove_label: Vec::new(),
                 set: owned(set),
                 unset: owned(unset),
+                assignee: None,
+                unassign: false,
             },
         };
         run(
@@ -1311,6 +1326,96 @@ mod tests {
         }
         assert!(run(&pool, &update(&[], &["Bad Name"]), false, None).is_err());
         assert_eq!(properties(&pool).len(), 1, "a refused edit changes nothing");
+    }
+
+    #[test]
+    fn exec_issue_assignee_is_set_filtered_and_cleared() {
+        let pool = test_pool();
+        seed_project(&pool, "TST");
+        pool.write()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO users(username,email,password_hash,is_admin) VALUES('root','r@t','x',1);
+                 INSERT INTO users(username,email,password_hash,is_admin) VALUES('guest','g@t','x',0);",
+            )
+            .unwrap();
+        let create = Command::Issue {
+            action: IssueAction::Create {
+                project: "TST".into(),
+                title: "Mine".into(),
+                description: String::new(),
+                status: "backlog".into(),
+                priority: "none".into(),
+                module: None,
+                labels: None,
+                set: Vec::new(),
+                assignee: Some("root".into()),
+            },
+        };
+        run(&pool, &create, false, None).unwrap();
+        let update = |assignee: Option<&str>, unassign| Command::Issue {
+            action: IssueAction::Update {
+                identifier: "TST-1".into(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
+                set: Vec::new(),
+                unset: Vec::new(),
+                assignee: assignee.map(str::to_string),
+                unassign,
+            },
+        };
+        let assignee = |pool: &DbPool| {
+            let conn = pool.read().unwrap();
+            queries::get_issue(&conn, 1).unwrap().assignment.assignee
+        };
+        assert_eq!(assignee(&pool).as_deref(), Some("root"));
+        let listed = |name: &str| {
+            let conn = pool.read().unwrap();
+            queries::list_issues(
+                &conn,
+                &ListIssuesQuery {
+                    assignee: Some(name.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .len()
+        };
+        assert_eq!(listed("root"), 1);
+        run(
+            &pool,
+            &Command::Issue {
+                action: IssueAction::List {
+                    project: "TST".into(),
+                    status: None,
+                    priority: None,
+                    module: None,
+                    label: None,
+                    assignee: Some("root".into()),
+                    workable: false,
+                    limit: None,
+                },
+            },
+            true,
+            None,
+        )
+        .unwrap();
+
+        // Neither flag leaves the assignee alone; a non-member is refused.
+        run(&pool, &update(None, false), false, None).unwrap();
+        assert_eq!(assignee(&pool).as_deref(), Some("root"));
+        assert!(run(&pool, &update(Some("guest"), false), false, None).is_err());
+        assert!(run(&pool, &update(Some("nobody"), false), false, None).is_err());
+        assert_eq!(assignee(&pool).as_deref(), Some("root"));
+        run(&pool, &update(None, true), false, None).unwrap();
+        assert_eq!(assignee(&pool), None);
+        assert_eq!(listed("root"), 0);
     }
 
     #[test]
@@ -1351,6 +1456,7 @@ mod tests {
                 priority: None,
                 module: None,
                 label: None,
+                assignee: None,
                 workable: false,
                 limit: None,
             },
@@ -1790,6 +1896,7 @@ mod tests {
                 module: None,
                 labels: Some("bug,urgent".into()),
                 set: Vec::new(),
+                assignee: None,
             },
         };
         run(&pool, &cmd, false, None).unwrap();
@@ -1817,6 +1924,8 @@ mod tests {
                 remove_label: owned(remove),
                 set: Vec::new(),
                 unset: Vec::new(),
+                assignee: None,
+                unassign: false,
             },
         };
         run(pool, &cmd, false, None).unwrap();
@@ -2015,6 +2124,7 @@ mod tests {
                     module: None,
                     labels: None,
                     set: Vec::new(),
+                    assignee: None,
                 },
             },
             false,
@@ -2049,6 +2159,8 @@ mod tests {
                     remove_label: Vec::new(),
                     set: Vec::new(),
                     unset: Vec::new(),
+                    assignee: None,
+                    unassign: false,
                 },
             },
             false,
@@ -2077,6 +2189,8 @@ mod tests {
                     remove_label: Vec::new(),
                     set: Vec::new(),
                     unset: Vec::new(),
+                    assignee: None,
+                    unassign: false,
                 },
             },
             false,
@@ -2248,6 +2362,7 @@ mod tests {
                     module: None,
                     labels: None,
                     set: Vec::new(),
+                    assignee: None,
                 },
             },
             false,

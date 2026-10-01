@@ -103,6 +103,16 @@ pub(super) fn parsed_property_sets(
     Ok(parsed)
 }
 
+/// `--assignee` / `--unassign` as the tristate `UpdateIssue::assignee`
+/// carries: neither flag leaves the assignee alone.
+pub(super) fn assignee_edit(assignee: &Option<String>, unassign: bool) -> Option<Option<String>> {
+    if unassign {
+        Some(None)
+    } else {
+        assignee.clone().map(Some)
+    }
+}
+
 /// Whether `--url` was typed for `lific mcp`, rather than arriving from
 /// `LIFIC_URL`.
 ///
@@ -812,6 +822,10 @@ pub enum IssueAction {
         #[arg(short, long)]
         label: Option<String>,
 
+        /// Filter by assignee username
+        #[arg(long, value_name = "USERNAME")]
+        assignee: Option<String>,
+
         /// Only show workable issues (open, not in review, no unresolved blockers)
         #[arg(short, long)]
         workable: bool,
@@ -860,6 +874,10 @@ pub enum IssueAction {
         /// Set a text property (repeatable), e.g. --set footprint="src/a.js, test/"
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
+
+        /// Assign to this user (a project member or an administrator, or a bot of one)
+        #[arg(long, value_name = "USERNAME")]
+        assignee: Option<String>,
     },
 
     /// Update an existing issue
@@ -919,6 +937,14 @@ pub enum IssueAction {
         /// Remove a text property (repeatable). Not present is a no-op
         #[arg(long = "unset", value_name = "NAME")]
         unset: Vec<String>,
+
+        /// Assign to this user (a project member or an administrator, or a bot of one)
+        #[arg(long, value_name = "USERNAME", conflicts_with = "unassign")]
+        assignee: Option<String>,
+
+        /// Clear the assignee
+        #[arg(long)]
+        unassign: bool,
     },
 
     /// Relate two issues. With the default type, SOURCE blocks TARGET
@@ -2669,6 +2695,7 @@ mod tests {
                         label,
                         workable,
                         limit,
+                        ..
                     },
             } => {
                 assert_eq!(project, "LIF");
@@ -2769,6 +2796,40 @@ mod tests {
             }
             _ => panic!("expected Issue Create"),
         }
+    }
+
+    #[test]
+    fn parse_issue_assignee_flags() {
+        let update = |args: &[&str]| {
+            let mut argv = vec!["lific", "issue", "update", "LIF-42"];
+            argv.extend_from_slice(args);
+            Cli::try_parse_from(argv).map(|cli| match cli.command {
+                Command::Issue {
+                    action:
+                        IssueAction::Update {
+                            assignee, unassign, ..
+                        },
+                } => assignee_edit(&assignee, unassign),
+                _ => panic!("expected Issue Update"),
+            })
+        };
+        assert_eq!(update(&[]).unwrap(), None);
+        assert_eq!(
+            update(&["--assignee", "kit"]).unwrap(),
+            Some(Some("kit".into()))
+        );
+        assert_eq!(update(&["--unassign"]).unwrap(), Some(None));
+        assert!(update(&["--assignee", "kit", "--unassign"]).is_err());
+
+        let cli = Cli::try_parse_from(["lific", "issue", "list", "-p", "LIF", "--assignee", "kit"])
+            .unwrap();
+        let Command::Issue {
+            action: IssueAction::List { assignee, .. },
+        } = cli.command
+        else {
+            panic!("expected Issue List");
+        };
+        assert_eq!(assignee.as_deref(), Some("kit"));
     }
 
     #[test]

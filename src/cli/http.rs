@@ -32,7 +32,8 @@ use super::weblinks::{
 };
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction, ModuleAction,
-    PageAction, ProjectAction, edited_labels, owned_labels, parsed_property_sets, render,
+    PageAction, ProjectAction, assignee_edit, edited_labels, owned_labels, parsed_property_sets,
+    render,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -416,6 +417,7 @@ impl HttpBackend {
                 priority,
                 module,
                 label,
+                assignee,
                 workable,
                 limit,
             } => {
@@ -436,6 +438,9 @@ impl HttpBackend {
                     label
                         .as_deref()
                         .map(|value| ("label", Cow::Borrowed(value))),
+                    assignee
+                        .as_deref()
+                        .map(|value| ("assignee", Cow::Borrowed(value))),
                     workable.then_some(("workable", Cow::Borrowed("true"))),
                     limit.map(|value| ("limit", Cow::Owned(value.to_string()))),
                 ]
@@ -457,6 +462,7 @@ impl HttpBackend {
                 module,
                 labels,
                 set,
+                assignee,
             } => {
                 let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
                 let project_id = self.project_id(project).await?;
@@ -474,6 +480,7 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels: owned_labels(labels.as_deref()).unwrap_or_default(),
+                    assignee: assignee.clone(),
                     set_properties,
                     source: None,
                     // Never serialized; the server names its own actor from
@@ -494,6 +501,8 @@ impl HttpBackend {
                 remove_label,
                 set,
                 unset,
+                assignee,
+                unassign,
             } => {
                 let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
                 let id = self.issue_id(identifier).await?;
@@ -529,6 +538,7 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels,
+                    assignee: assignee_edit(assignee, *unassign),
                     // A server-side delta: no read, no `expected_seq`.
                     set_properties,
                     unset_properties: unset.clone(),
@@ -2985,6 +2995,8 @@ mod tests {
                 remove_label: remove.iter().map(|v| (*v).to_string()).collect(),
                 set: Vec::new(),
                 unset: Vec::new(),
+                assignee: None,
+                unassign: false,
             },
         };
         let labels = |issue: serde_json::Value| {
@@ -3029,6 +3041,8 @@ mod tests {
                         remove_label: Vec::new(),
                         set: Vec::new(),
                         unset: Vec::new(),
+                        assignee: None,
+                        unassign: false,
                     },
                 },
                 IssueLinkOutput::Url,
@@ -3044,6 +3058,7 @@ mod tests {
                 priority: None,
                 module: None,
                 label: None,
+                assignee: None,
                 workable,
                 limit: None,
             },
@@ -3078,6 +3093,7 @@ mod tests {
                         module: None,
                         labels: None,
                         set: owned(&["footprint=src/a.js, test/", "pr=41"]),
+                        assignee: None,
                     },
                 },
                 IssueLinkOutput::Url,
@@ -3102,6 +3118,8 @@ mod tests {
                 remove_label: Vec::new(),
                 set: owned(set),
                 unset: owned(unset),
+                assignee: None,
+                unassign: false,
             },
         };
         let updated = backend
@@ -3122,6 +3140,7 @@ mod tests {
                         priority: None,
                         module: None,
                         label: None,
+                        assignee: None,
                         workable: false,
                         limit: None,
                     },
@@ -3152,6 +3171,86 @@ mod tests {
                 .await
                 .is_err()
         );
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn assigns_filters_and_unassigns_over_http() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let created = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Create {
+                        project: "TST".into(),
+                        title: "Mine".into(),
+                        description: String::new(),
+                        status: "backlog".into(),
+                        priority: "none".into(),
+                        module: None,
+                        labels: None,
+                        set: Vec::new(),
+                        assignee: Some("test-admin".into()),
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["assignee"], "test-admin");
+        let identifier = created["identifier"].as_str().unwrap().to_owned();
+        let update = |assignee: Option<&str>, unassign| Command::Issue {
+            action: IssueAction::Update {
+                identifier: identifier.clone(),
+                title: None,
+                description: None,
+                status: None,
+                priority: None,
+                module: None,
+                labels: None,
+                add_label: Vec::new(),
+                remove_label: Vec::new(),
+                set: Vec::new(),
+                unset: Vec::new(),
+                assignee: assignee.map(str::to_string),
+                unassign,
+            },
+        };
+        let list = Command::Issue {
+            action: IssueAction::List {
+                project: "TST".into(),
+                status: None,
+                priority: None,
+                module: None,
+                label: None,
+                assignee: Some("test-admin".into()),
+                workable: false,
+                limit: None,
+            },
+        };
+        let listed = backend.execute(&list, IssueLinkOutput::Url).await.unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["identifier"], identifier.as_str());
+
+        let refused = backend
+            .execute(&update(Some("nobody"), false), IssueLinkOutput::Url)
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("no active user"), "{refused}");
+        // Neither flag: the body carries no `assignee` key, so it is kept.
+        let kept = backend
+            .execute(&update(None, false), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert_eq!(kept["assignee"], "test-admin");
+        let cleared = backend
+            .execute(&update(None, true), IssueLinkOutput::Url)
+            .await
+            .unwrap();
+        assert!(cleared["assignee"].is_null());
+        let listed = backend.execute(&list, IssueLinkOutput::Url).await.unwrap();
+        assert!(listed.as_array().unwrap().is_empty());
         fixture.server.abort();
     }
 
@@ -3856,6 +3955,7 @@ mod tests {
                 priority: None,
                 module: None,
                 label: None,
+                assignee: None,
                 workable: false,
                 limit: None,
             },
