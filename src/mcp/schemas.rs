@@ -68,6 +68,18 @@ pub struct ListIssuesInput {
     pub limit: Option<i64>,
     #[schemars(description = "Zero-indexed offset for paging")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Issues in the projects where any of these users has a role, across projects; project becomes optional. \"me\" is you; others by username (\"alice\" or \"@alice\"). Lists active and todo unless status/statuses asks, sorted like the web home page: status, priority, then most recently updated"
+    )]
+    pub members: Option<Vec<String>>,
+    #[schemars(
+        description = "Roles that count for members: lead, maintainer, viewer, or all (default all). Without members, means your own roles"
+    )]
+    pub roles: Option<Vec<String>>,
+    #[schemars(
+        description = "Several statuses at once: backlog, todo, active, done, cancelled, or all. Not together with status"
+    )]
+    pub statuses: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -409,7 +421,7 @@ pub struct ListResourcesInput {
     )]
     pub resource_type: String,
     #[schemars(
-        description = "Project ID (required for issues, plans, modules, labels, and folders unless the session is bound to a repository; optional for pages and projects)"
+        description = "Project ID (required for issues, plans, modules, labels, and folders unless the session is bound to a repository; optional for pages; for projects, lists only that project)"
     )]
     pub project: Option<String>,
     #[schemars(description = "Folder name (for pages)")]
@@ -432,6 +444,22 @@ pub struct ListResourcesInput {
     pub limit: Option<i64>,
     #[schemars(description = "Zero-indexed offset for issue, page, or plan paging")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Projects only: keep projects where any of these users has a role. \"me\" is you; others by username (\"alice\" or \"@alice\")"
+    )]
+    pub members: Option<Vec<String>>,
+    #[schemars(
+        description = "Projects only: roles that count for members: lead, maintainer, viewer, or all (default all). Without members, means your own roles"
+    )]
+    pub roles: Option<Vec<String>>,
+    #[schemars(
+        description = "Projects only: statuses to count per project: backlog, todo, active, done, cancelled, or all (default all); [] prints no counts"
+    )]
+    pub statuses: Option<Vec<String>>,
+    #[schemars(
+        description = "Projects only: roles to list every member of by name: lead, maintainer, viewer, or all. Default names up to 5 leads and maintainers and counts viewers; [] prints counts only"
+    )]
+    pub show_members: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
