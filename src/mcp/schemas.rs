@@ -82,7 +82,7 @@ pub struct ListIssuesInput {
     )]
     pub roles: Option<Vec<String>>,
     #[schemars(
-        description = "Several statuses at once: backlog, todo, active, done, cancelled, or all. Not together with status"
+        description = "Several statuses at once: backlog, todo, active, in_review, done, cancelled, or all. Not together with status"
     )]
     pub statuses: Option<Vec<String>>,
 }
@@ -474,7 +474,7 @@ pub struct ListResourcesInput {
     )]
     pub roles: Option<Vec<String>>,
     #[schemars(
-        description = "Projects only: statuses to count per project: backlog, todo, active, done, cancelled, or all (default all); [] prints no counts"
+        description = "Projects only: statuses to count per project: backlog, todo, active, in_review, done, cancelled, or all (default all); [] prints no counts"
     )]
     pub statuses: Option<Vec<String>>,
     #[schemars(

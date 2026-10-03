@@ -435,7 +435,7 @@ pub fn list_issues_page(
     };
     let order_clause = match q.order_by.as_deref() {
         None if q.triage_order && q.order.is_none() => String::from(concat!(
-            "CASE i.status WHEN 'active' THEN 0 WHEN 'todo' THEN 1 WHEN 'backlog' THEN 2 ELSE 3 END, ",
+            "CASE i.status WHEN 'active' THEN 0 WHEN 'in_review' THEN 1 WHEN 'todo' THEN 2 WHEN 'backlog' THEN 3 ELSE 4 END, ",
             "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ",
             "WHEN 'low' THEN 3 ELSE 4 END, ",
             "i.updated_at DESC, p.identifier, i.sequence",

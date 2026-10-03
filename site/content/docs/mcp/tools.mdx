@@ -93,7 +93,7 @@ Your roles: APP lead · WEB viewer
 - APP-9 | todo | high | Review the import
 ```
 
-With `members`, the listing matches the web home page's "My active issues": `active` and `todo` issues, `active` first, then by priority, then most recently updated. `status` or `statuses` brings in `backlog` or closed work, which sorts after `todo`. Unlike the home page, which shows every project you can see, only projects where the named users hold a role are listed. An explicit `order_by` still wins, and `order` needs `order_by` alongside it. An empty result still starts with the roles line, so "on three projects, nothing open" reads as such. `roles=["lead", "maintainer"]` is the sharpest "my work" filter: viewers often watch many projects they do not work on. `module` and `label` need `project`. Given `project` as well, `members` filters that one project, and the call says so when none of the named users has a role there. `members` never reaches beyond the projects you can see, and `"me"` resolves the same way as in [`list_resources`](#list_resources).
+With `members`, the listing matches the web home page's "My active issues": `active` and `todo` issues, `active` first, then by priority, then most recently updated. `status` or `statuses` brings in `in_review` work, which sorts right after `active`, and `backlog` or closed work, which sorts after `todo`. Unlike the home page, which shows every project you can see, only projects where the named users hold a role are listed. An explicit `order_by` still wins, and `order` needs `order_by` alongside it. An empty result still starts with the roles line, so "on three projects, nothing open" reads as such. `roles=["lead", "maintainer"]` is the sharpest "my work" filter: viewers often watch many projects they do not work on. `module` and `label` need `project`. Given `project` as well, `members` filters that one project, and the call says so when none of the named users has a role there. `members` never reaches beyond the projects you can see, and `"me"` resolves the same way as in [`list_resources`](#list_resources).
 
 ### `get_issue`
 
@@ -277,7 +277,7 @@ Lists projects, modules, labels, folders, pages, issues or plans. It is the disc
 | `offset` | `integer` | No | Zero-based, for issues, pages and plans. |
 | `members` | `string[]` | No | Projects only: keep projects where any of these users has a role. `"me"` is you; name others by username, with or without `@`. `"all"` is rejected. |
 | `roles` | `string[]` | No | Projects only: the roles that count for `members`: `lead`, `maintainer`, `viewer` or `all` (default). Without `members`, means your own roles. |
-| `statuses` | `string[]` | No | Projects only: which per-status issue counts each row prints: `backlog`, `todo`, `active`, `done`, `cancelled` or `all` (default). `[]` prints none. |
+| `statuses` | `string[]` | No | Projects only: which per-status issue counts each row prints: `backlog`, `todo`, `active`, `in_review`, `done`, `cancelled` or `all` (default). `[]` prints none. |
 | `show_members` | `string[]` | No | Projects only: roles whose members are all named, uncapped: `lead`, `maintainer`, `viewer` or `all`. `[]` prints only counts per role. |
 
 Projects are sorted by recent activity, and each row carries its workable-issue count, active-plan count and how long ago anything happened. It then shows the project's members by role, your own role, and its issue count per status:

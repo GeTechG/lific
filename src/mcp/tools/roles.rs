@@ -15,8 +15,9 @@ pub(super) const ROSTER_ORDER: [models::Role; 3] = [
 ];
 
 /// Statuses in the order a project row counts them: work in hand first.
-pub(super) const COUNT_ORDER: [models::Status; 5] = [
+pub(super) const COUNT_ORDER: [models::Status; 6] = [
     models::Status::Active,
+    models::Status::InReview,
     models::Status::Todo,
     models::Status::Backlog,
     models::Status::Done,

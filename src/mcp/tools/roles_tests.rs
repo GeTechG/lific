@@ -169,13 +169,17 @@ fn deactivated_users_are_left_off_the_roster() {
 #[test]
 fn project_row_counts_issues_per_status_and_omits_zeros() {
     let (m, _admin, lead, _maintainer, _viewer, _non_member, pid, _guard) = setup_membership_mcp();
-    seed_statuses(&m, pid, &["todo", "active", "todo", "backlog", "done"]);
+    seed_statuses(
+        &m,
+        pid,
+        &["todo", "active", "todo", "backlog", "done", "in_review"],
+    );
 
     let out = projects(&m, Some(&lead), json!({}));
 
     assert_ends(
         row(&out, "MEM"),
-        " | you: lead | 1 active · 2 todo · 1 backlog · 1 done",
+        " | you: lead | 1 active · 1 in_review · 2 todo · 1 backlog · 1 done",
     );
 }
 
