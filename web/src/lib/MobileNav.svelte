@@ -651,6 +651,15 @@
           <Home size={18} class="shrink-0" />
           Home
         </a>
+        <a
+          class="sidebar-destination mobile-main-row w-full min-h-12 flex items-center gap-3 px-3 rounded-lg text-left text-body-lg transition-colors"
+          href="#/issues"
+          aria-current={route === "/issues" || route === "/board" ? "page" : undefined}
+          onclick={(e) => go(e, "/issues")}
+        >
+          <List size={18} class="shrink-0" />
+          All issues
+        </a>
 
         <div class="flex items-center justify-between pl-3 pr-1 pt-2 pb-1">
           <span class="sidebar-section-label text-micro font-semibold uppercase text-[var(--text-faint)]">

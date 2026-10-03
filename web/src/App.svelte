@@ -5,6 +5,7 @@
   import Settings from "./routes/Settings.svelte";
   import InstanceSettings from "./routes/InstanceSettings.svelte";
   import IssueList from "./routes/IssueList.svelte";
+  import AllIssues from "./routes/AllIssues.svelte";
   import IssueDetail from "./routes/IssueDetail.svelte";
   import IssueNew from "./routes/IssueNew.svelte";
   import ProjectNew from "./routes/ProjectNew.svelte";
@@ -484,6 +485,7 @@
     // redirect onto the canonical routes above.
     | { type: "public-redirect"; to: string }
     | { type: "app"; page: "home" }
+    | { type: "app"; page: "all-issues"; layout: "list" | "board" }
     | { type: "app"; page: "settings" }
     | { type: "app"; page: "instance-settings" }
     | { type: "app"; page: "project-new" }
@@ -566,6 +568,11 @@
     // LIF-237: bare root — the "My Work" home dashboard.
     if (r === "/") {
       return { type: "app", page: "home" };
+    }
+    // Every project's issues at once. No project segment, so the
+    // project-scoped patterns below cannot shadow these two.
+    if (r === "/issues" || r === "/board") {
+      return { type: "app", page: "all-issues", layout: r === "/board" ? "board" : "list" };
     }
     if (r === "/settings") {
       return { type: "app", page: "settings" };
@@ -866,6 +873,8 @@
         {realtimeActivityReady}
         {realtimeActivityRevision}
       />
+    {:else if parsed.page === "all-issues"}
+      <AllIssues {navigate} layout={parsed.layout} />
     {:else if parsed.page === "settings"}
       <Settings {navigate} />
     {:else if parsed.page === "instance-settings"}

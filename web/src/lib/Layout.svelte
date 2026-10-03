@@ -813,6 +813,7 @@
   );
   let mobileSection = $derived.by(() => {
     if (route === "/") return "Home";
+    if (route === "/issues" || route === "/board") return "All issues";
     if (isActive("/settings")) return "Settings";
     if (route === "/projects/new") return "New project";
     if (route === "/projects/import") return "Import archive";
@@ -914,11 +915,19 @@
              pill's shape (icon + label) but unindented and un-chevroned
              since it isn't a disclosure. -->
         <a href="#/" use:navLink={navigate} aria-current={route === "/" ? "page" : undefined}
-          class="sidebar-destination sidebar-home w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md
+          class="sidebar-destination w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md
                  text-left text-body-sm transition-colors"
         >
           <Home size={14} class="shrink-0" />
           Home
+        </a>
+        <a href="#/issues" use:navLink={navigate}
+          aria-current={route === "/issues" || route === "/board" ? "page" : undefined}
+          class="sidebar-destination sidebar-home w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md
+                 text-left text-body-sm transition-colors"
+        >
+          <List size={14} class="shrink-0" />
+          All issues
         </a>
 
         <!-- One project entry: the pill plus its sub-nav. Shared verbatim by
