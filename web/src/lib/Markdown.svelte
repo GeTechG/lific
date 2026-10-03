@@ -53,11 +53,15 @@
     // `activeBudget` below). Callers that render several bodies which must
     // share one aggregate cap (Comments) pass one in and own its lifetime.
     mermaidBudget = undefined,
+    // Set by a caller that can save the body: task-list checkboxes become
+    // clickable and report which one (in document order) was flipped.
+    onTaskToggle = undefined,
   }: {
     content: string;
     class?: string;
     mentions?: MentionUser[];
     mermaidBudget?: MermaidBudget | undefined;
+    onTaskToggle?: ((index: number, checked: boolean) => void) | undefined;
   } = $props();
 
   // Lowercased username → display name, for chip rendering.
@@ -566,6 +570,21 @@
   // Same direct-DOM approach as the code/hover effects since the nodes come
   // from raw {@html}, not this component's template.
   const ATTACHMENT_SRC_RE = /\/api\/attachments\/(\d+)\/?$/;
+
+  // marked renders task-list checkboxes disabled; with a saver they are live.
+  $effect(() => {
+    html; // re-run when the rendered markdown changes
+    const root = containerEl;
+    if (!root || !onTaskToggle) return;
+    const boxes = Array.from(root.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"], li > p > input[type="checkbox"]'));
+    for (const b of boxes) b.disabled = false;
+    const onChange = (e: Event) => {
+      const i = boxes.indexOf(e.target as HTMLInputElement);
+      if (i >= 0) onTaskToggle(i, boxes[i].checked);
+    };
+    root.addEventListener("change", onChange);
+    return () => root.removeEventListener("change", onChange);
+  });
 
   $effect(() => {
     html; // re-run when the rendered markdown changes

@@ -305,3 +305,24 @@ export function insertLink(state: EditorState): TransformResult {
   const selEnd = selStart + LINK_URL_PLACEHOLDER.length;
   return { text: next, selectionStart: selStart, selectionEnd: selEnd };
 }
+
+/**
+ * Flip the `index`-th task-list marker (`- [ ]` / `- [x]`) of a markdown body,
+ * counted the way the rendered checkboxes are: top to bottom, fenced code
+ * skipped. Returns the body unchanged when there is no such marker.
+ */
+// ponytail: line-based; a marker inside an indented code block or raw HTML is counted though it renders no checkbox. Parse with marked's lexer if that ever bites.
+export function toggleTask(md: string, index: number, checked: boolean): string {
+  let n = -1, fence: string | null = null;
+  return md
+    .split("\n")
+    .map((line) => {
+      const f = /^\s*(```+|~~~+)/.exec(line)?.[1];
+      if (f && (!fence || f.startsWith(fence))) fence = fence ? null : f;
+      else if (!fence && /^\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+\[[ xX]\](?=\s|$)/.test(line) && ++n === index) {
+        return line.replace(/\[[ xX]\]/, checked ? "[x]" : "[ ]");
+      }
+      return line;
+    })
+    .join("\n");
+}

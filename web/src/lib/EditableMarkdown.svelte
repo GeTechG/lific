@@ -30,6 +30,7 @@
   // protect). Non-empty surfaces never start edit from a content click.
 
   import Markdown from "./Markdown.svelte";
+  import { toggleTask } from "./markdownFormat";
   import ModeToggle from "./ModeToggle.svelte";
   import StatusIcon from "./StatusIcon.svelte";
   import {
@@ -707,14 +708,18 @@
 >
   {#if mode === "read"}
     <!--
-      Read pane. Reading is 100% passive — no click handlers — so word
+      Read pane. Reading is passive — the only click it acts on is a
+      task-list checkbox, which saves the flipped body — so word
       selection, link clicks, and double-click-to-select-word all work
       as in any other rendered document. Empty body keeps its
       click-to-edit affordance per the issue body.
     -->
     <div bind:this={renderedEl} class="em-rendered {proseClass}">
       {#if hasContent}
-        <Markdown content={value} />
+        <Markdown
+          content={value}
+          onTaskToggle={editable ? (i, checked) => onSave(toggleTask(value, i, checked)) : undefined}
+        />
       {:else if editable}
         <button
           type="button"
