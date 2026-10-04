@@ -34,6 +34,18 @@ export function canManageComment(
   return actionsAvailable && currentUser?.id === comment.user_id;
 }
 
+/** Who may tick a task-list checkbox in a comment: its author, and a
+ *  workspace admin — the server lets an admin edit any comment, and a
+ *  checklist an agent leaves for a human is ticked by someone else. */
+export function canToggleCommentTasks(
+  comment: Comment,
+  currentUser: { id: number } | null,
+  isAdmin: boolean,
+  canUpdate: boolean,
+): boolean {
+  return canUpdate && currentUser !== null && (isAdmin || currentUser.id === comment.user_id);
+}
+
 export function commentWasEdited(comment: Comment): boolean {
   return comment.updated_at !== comment.created_at;
 }

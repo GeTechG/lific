@@ -35,6 +35,7 @@
   import AttachTrigger from "./attachments/AttachTrigger.svelte";
   import {
     canManageComment,
+    canToggleCommentTasks,
     commentKeyboardAction,
     commentThreadRevision,
     commentWasEdited,
@@ -42,6 +43,8 @@
     type AnchorPageAttempt,
     type CommentKeyboardContext,
   } from "./commentState";
+  import { toggleTask } from "./markdownFormat";
+  import { ensureMeAdmin, projectRole } from "./projectRole.svelte";
 
   let {
     comments,
@@ -106,6 +109,7 @@
   let scrollingTarget: string | null = null;
 
   onMount(() => {
+    void ensureMeAdmin();
     function onHashChange(event: HashChangeEvent) {
       pendingCommentTarget = commentTargetFromHash(new URL(event.newURL).hash);
     }
@@ -607,7 +611,15 @@
             {:else}
               <div class="cmt__md">
                 {#key mermaidBudget}
-                  <Markdown content={comment.content} mentions={candidates} class="text-sm" {mermaidBudget} />
+                  <Markdown
+                    content={comment.content}
+                    mentions={candidates}
+                    class="text-sm"
+                    {mermaidBudget}
+                    onTaskToggle={canToggleCommentTasks(comment, currentUser, projectRole.meIsAdmin === true, onUpdate !== undefined)
+                      ? (i, checked) => void onUpdate?.(comment.id, toggleTask(comment.content, i, checked))
+                      : undefined}
+                  />
                 {/key}
               </div>
             {/if}

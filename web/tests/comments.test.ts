@@ -32,6 +32,7 @@ const {
   ANCHOR_AUTO_SEARCH_LIMIT,
   anchorNeedsOlderPage,
   canManageComment,
+  canToggleCommentTasks,
   commentKeyboardAction,
   commentThreadRevision,
   commentWasEdited,
@@ -93,6 +94,16 @@ test("only the comment author gets web mutation actions", () => {
   expect(canManageComment(own, { id: 3 }, true)).toBe(true);
   expect(canManageComment(own, { id: 9 }, true)).toBe(false);
   expect(canManageComment(own, { id: 3 }, false)).toBe(false);
+});
+
+test("the author and an admin can tick a comment's checkboxes", () => {
+  const own = comment();
+
+  expect(canToggleCommentTasks(own, { id: 3 }, false, true)).toBe(true);
+  expect(canToggleCommentTasks(own, { id: 9 }, true, true)).toBe(true);
+  expect(canToggleCommentTasks(own, { id: 9 }, false, true)).toBe(false);
+  expect(canToggleCommentTasks(own, null, true, true)).toBe(false);
+  expect(canToggleCommentTasks(own, { id: 3 }, false, false)).toBe(false);
 });
 
 test("routes comment shortcuts by the focused interaction", () => {
