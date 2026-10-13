@@ -196,7 +196,7 @@ interval_minutes = 60
 retain = 24
 ```
 
-A relative `dir` resolves against the database's directory, and an absolute one is used as written. After startup the server waits five seconds, writes the first backup, then writes one every `interval_minutes`, keeping the newest `retain`. The defaults keep a day of hourly backups. `interval_minutes = 0` or `retain = 0` is treated as a mistake: Lific logs a warning and uses the default. To turn backups off, set `enabled = false`.
+A relative `dir` resolves against the database's directory, and an absolute one is used as written. A new backup is written once the newest one in `dir` is `interval_minutes` old, and the newest `retain` are kept. The server checks five seconds after startup and then on schedule. So does `lific mcp` over stdio, and local data commands check after they finish, so an instance used without a server is backed up too. The schedule lives in the backup directory, so the server, any number of stdio sessions and the CLI share it rather than each writing their own archives. Restarting the server does not force a fresh backup; run `lific dump` when you want one now. The defaults keep a day of hourly backups. `interval_minutes = 0` or `retain = 0` is treated as a mistake: Lific logs a warning and uses the default. To turn backups off, set `enabled = false`.
 
 Each backup is one archive named `<database name>_YYYYMMDD_HHMMSS.tar.gz`, such as `lific_20260101_120000.tar.gz`, readable only by its owner on Linux and macOS. It holds:
 
