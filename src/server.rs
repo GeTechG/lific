@@ -639,17 +639,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         info!(active_keys = count, "API key auth enabled");
     }
 
-    // Start backup task
-    if cfg.backup.enabled {
-        let pool_arc = Arc::new(pool.clone());
-        backup::start_backup_task(pool_arc, cfg.database.path.clone(), cfg.backup.clone());
-        info!(
-            dir = %cfg.backup_dir().display(),
-            interval = %format!("{}m", cfg.backup.interval_minutes),
-            retain = cfg.backup.retain,
-            "automatic backups enabled"
-        );
-    }
+    backup::start_scheduler(cfg, pool.clone());
 
     // Empty the trash on a schedule (LIF-438). A delete is a tombstone now, so
     // something has to collect them once they are past the recovery window.

@@ -533,7 +533,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             .public_url
             .as_deref()
             .and_then(links::IssueLinkContext::parse);
-        return cli::exec::run(&pool, &cli.command, json, links.as_ref());
+        let result = cli::exec::run(&pool, &cli.command, json, links.as_ref());
+        // LIF-509: catch up on a due backup after the command's own output.
+        // Not from `git-hook`, which runs inside someone's `git commit` and
+        // should never stall it on an archive.
+        if !matches!(cli.command, Command::GitHook { .. }) {
+            backup::run_if_due(&cfg, &pool);
+        }
+        return result;
     }
 
     match cli.command {
@@ -986,6 +993,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ref identifier) = bound_project {
                 info!(project = %identifier, "stdio session bound to project");
             }
+
+            // LIF-509: a stdio session may be the only process ever opening
+            // this database, so it keeps the backups too. The schedule is
+            // shared through the backup directory, so a session per agent
+            // does not multiply them.
+            backup::start_scheduler(&cfg, pool.clone());
 
             let server =
                 mcp::LificMcp::for_stdio(pool, stdio_auth).with_bound_project(bound_project);
