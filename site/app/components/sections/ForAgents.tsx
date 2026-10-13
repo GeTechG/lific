@@ -77,7 +77,7 @@ export function ForAgents() {
           ))}
         </ul>
         <Body className="mt-8">
-          31 tools in 5,787 tokens of context. <Cmd>lific connect</Cmd> sets
+          31 tools in 5,781 tokens of context. <Cmd>lific connect</Cmd> sets
           them up in 11 AI clients.
         </Body>
       </Reveal>

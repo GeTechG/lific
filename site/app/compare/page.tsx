@@ -58,7 +58,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: "How many context tokens does an issue tracker's MCP server cost?",
-    a: "Measured against each server's tools/list output with tiktoken o200k_base on July 14, 2026: beads 2,871 tokens (15 tools), Gitea 6,676 (53 tools), a Vikunja community server 7,213 (53 tools), and Plane 30,105 (139 tools). Lific was measured the same way on October 8, 2026, for v2.11.0: 5,787 tokens (31 tools). MCP client guidance recommends budgeting tool definitions to roughly 1 to 5 percent of the context window, which is 2k to 10k tokens on a 200k model.",
+    a: "Measured against each server's tools/list output with tiktoken o200k_base on July 14, 2026: beads 2,871 tokens (15 tools), Gitea 6,676 (53 tools), a Vikunja community server 7,213 (53 tools), and Plane 30,105 (139 tools). Lific was measured the same way on October 13, 2026, for v2.11.0: 5,781 tokens (31 tools). MCP client guidance recommends budgeting tool definitions to roughly 1 to 5 percent of the context window, which is 2k to 10k tokens on a 200k model.",
   },
 ];
 
@@ -601,8 +601,8 @@ export default function Compare() {
             So we measured, on {STAMP}: each server launched over stdio,
             asked for its tool list, schemas tokenized. Numbers below are what
             an agent pays before it reads a single line of your code. Lific&apos;s
-            own row was measured again the same way on September 25, 2026, against
-            v2.10.0; the other rows are the {STAMP} figures.
+            own row was measured again the same way on October 13, 2026, against
+            v2.11.0; the other rows are the {STAMP} figures.
           </Body>
           <ComparisonTable
             caption="Measured tool counts and tool-schema token costs of each tracker's MCP server"
@@ -621,7 +621,7 @@ export default function Compare() {
                     Built in: <Cmd>lific mcp</Cmd> (v2.11.0)
                   </>,
                   <>31</>,
-                  <>5,787 tokens</>,
+                  <>5,781 tokens</>,
                   <>2.9%</>,
                 ],
               },
@@ -724,7 +724,7 @@ export default function Compare() {
           </Body>
           <p className="mt-4 max-w-[75ch] text-caption leading-relaxed text-text-faint">
             Methodology: each server was launched over stdio (the others on{" "}
-            {STAMP}, Lific again on October 8, 2026),
+            {STAMP}, Lific again on October 13, 2026),
             sent <Cmd>initialize</Cmd> and <Cmd>tools/list</Cmd> via the
             official MCP Python SDK, and the returned tool definitions (name,
             description, input schema) were serialized as compact JSON and
