@@ -460,6 +460,10 @@
     try {
       return await p;
     } finally {
+      // Releasing the veto re-seeds `issues` from the model, so catch the
+      // model up first. Waiting for a realtime event instead snapped the row
+      // back to its old status, for good when no socket was connected.
+      await model?.pull().catch(() => {});
       mutationsInFlight--;
     }
   }
@@ -1558,6 +1562,7 @@
   // made from inside the peek panel, without a refetch.
   function onPeekIssueChanged(id: number, patch: Record<string, unknown>) {
     issues = issues.map((i) => (i.id === id ? { ...i, ...(patch as Partial<Issue>) } : i));
+    reconcile();
   }
   // LIF-248: PeekPanel is now mounted globally in Layout.svelte, not here —
   // register our sync callback with the peek.svelte.ts singleton instead
@@ -1969,6 +1974,7 @@
                    other — cross-column, cross-lane, or both at once. -->
               <div
                 class="flex flex-col gap-2 flex-1 min-h-[40px]"
+                data-board-cell={cellKey(laneKey, status)}
                 use:dndzone={{
                   items: colIssues,
                   flipDurationMs: flipMs(),
@@ -2294,7 +2300,7 @@
       {#each groups as g, _gi (g.key)}
         {@const collapsed = view.isGroupCollapsed(g.key)}
         {@const groupOffset = groups.slice(0, _gi).reduce((n, gg) => n + (view.isGroupCollapsed(gg.key) ? 0 : gg.issues.length), 0)}
-        <div class="border-b border-[var(--border)] last:border-b-0">
+        <div class="border-b border-[var(--border)] last:border-b-0" data-group-key={g.key}>
           <button
             class="w-full sticky top-0 z-10 flex items-center gap-2 px-6 py-2
                    bg-[var(--surface)] border-b border-[var(--border)]

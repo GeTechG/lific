@@ -66,7 +66,7 @@ export class ProjectReadModel {
 
   // Non-reactive plumbing.
   private pullTimer: ReturnType<typeof setTimeout> | null = null;
-  private pulling = false;
+  private pullRun: Promise<void> | null = null;
   private pullQueued = false;
   private bootstrapping: Promise<void> | null = null;
   /** An event arrived while the snapshot was still in flight. `/index`
@@ -144,7 +144,10 @@ export class ProjectReadModel {
   }
 
   /** Pull immediately, skipping the debounce. Used after a local mutation
-   *  whose result the view needs reconciled now. */
+   *  whose result the view needs reconciled now: the returned promise
+   *  settles only after a `/changes` request that started after this call
+   *  has been applied, so a write the caller already saw acknowledged is in
+   *  the replica by then. */
   async pull(): Promise<void> {
     if (this.bootstrapping) {
       // Never race a snapshot with a delta: the snapshot would land second
@@ -157,28 +160,35 @@ export class ProjectReadModel {
       await this.bootstrap();
       return;
     }
-    if (this.pulling) {
+    if (this.pullRun) {
+      // The running pull may have read its page before the caller's write.
+      // Queue another round; the run loops until the queue is drained.
       this.pullQueued = true;
+      while (this.pullRun) await this.pullRun;
       return;
     }
     if (!this.inScope()) return;
-    this.pulling = true;
+    this.pullRun = this.drain();
+    await this.pullRun;
+  }
+
+  private async drain(): Promise<void> {
     try {
-      // Loop while the server says there is more above our (just advanced)
-      // cursor, so one call drains a large backlog.
-      for (;;) {
-        if (!this.inScope()) break;
-        const res = await getProjectChanges(this.projectId, this.cursor);
-        if (!res.ok) break;
-        this.applyChanges(res.data);
-        if (!res.data.has_more) break;
-      }
-    } finally {
-      this.pulling = false;
-      if (this.pullQueued) {
+      do {
         this.pullQueued = false;
-        void this.pull();
-      }
+        // Loop while the server says there is more above our (just advanced)
+        // cursor, so one call drains a large backlog.
+        for (;;) {
+          if (!this.inScope()) return;
+          const res = await getProjectChanges(this.projectId, this.cursor);
+          if (!res.ok) return;
+          this.applyChanges(res.data);
+          if (!res.data.has_more) break;
+        }
+      } while (this.pullQueued);
+    } finally {
+      this.pullQueued = false;
+      this.pullRun = null;
     }
   }
 

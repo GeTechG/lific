@@ -171,6 +171,9 @@
     try {
       return await write();
     } finally {
+      // Releasing the pause re-seeds from the model; catch it up first so
+      // the write is not undone on screen while no realtime event arrives.
+      await model?.pull().catch(() => {});
       mutationsInFlight -= 1;
     }
   }
