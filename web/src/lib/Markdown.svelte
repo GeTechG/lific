@@ -473,7 +473,6 @@
         icon = null;
         link.querySelector(":scope > .identifier-status-icon")?.remove();
         delete link.dataset.issueStatus;
-        link.removeAttribute("title");
         link.removeAttribute("aria-label");
       };
       const unsubscribe = subscribeIssueStatus(identifier, (result) => {
@@ -491,7 +490,6 @@
           target: iconHost,
           props: { status, size: 14 },
         });
-        link.title = `${identifier} · ${label} · Shift-click to preview`;
         link.setAttribute("aria-label", `${link.textContent} (${label})`);
       });
       cleanups.push(() => {
