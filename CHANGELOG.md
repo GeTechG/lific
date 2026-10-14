@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.11.1 (2026-10-13)
+
+A web UI fix for issue previews.
+
+### Web UI
+
+- Issue hover cards opened from links inside a page or issue body now show in full, instead of being clipped or pushed off the edge of the surrounding panel. Those links also stop showing a native browser tooltip on top of the card (PR #99 by [@zorro432](https://github.com/zorro432)).
+
 ## v2.11.0 (2026-10-13)
 
 This release does three things. `cargo install lific` builds again, after an upstream MCP library change broke it for 2.10.0. Agents get tools for working through a large tracker without rereading it. And issues can now say who has to do them, which Home is rebuilt around. Projects can be archived to a file and brought back. Seven migrations run on first start, and API keys move to a new verifier format, so read the upgrade notes before upgrading a shared database.
