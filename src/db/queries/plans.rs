@@ -492,7 +492,7 @@ pub fn edit_step_text(
     let matches = current.matches(find).count();
     if matches == 0 {
         return Err(LificError::BadRequest(format!(
-            "find string not found in step {field}"
+            "find string not found in step {field}; read the step fresh and copy the exact text"
         )));
     }
     if matches > 1 && !replace_all {
