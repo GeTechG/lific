@@ -767,6 +767,35 @@ async fn unknown_fields_in_nested_plan_steps_are_rejected() {
 }
 
 #[tokio::test]
+async fn a_missing_field_names_where_it_was_missing() {
+    let (m, _guard) = mcp();
+    seed_project(&m, "Wire", "WIR");
+    let mut session = wire::Session::start(m.clone()).await;
+
+    let error = session
+        .call("list_resources", json!({"project": "WIR"}))
+        .await
+        .expect_err("a missing required parameter must be refused");
+    assert!(
+        error.starts_with("Missing parameter `resource_type` in list_resources."),
+        "got: {error}"
+    );
+    assert!(error.contains("Valid parameters:"), "got: {error}");
+
+    let error = session
+        .call(
+            "create_plan",
+            json!({"project": "WIR", "title": "Plan", "steps": [{"description": "untitled"}]}),
+        )
+        .await
+        .expect_err("a step without a title must be refused");
+    assert_eq!(
+        error, "Missing field `title` in a nested create_plan object.",
+        "the plan's own title was sent, so the step's is the one missing"
+    );
+}
+
+#[tokio::test]
 async fn camel_case_edit_keys_survive_unknown_field_rejection() {
     let (m, _guard) = mcp();
     seed_project(&m, "Wire", "WIR");

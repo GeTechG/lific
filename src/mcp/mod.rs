@@ -696,6 +696,11 @@ impl ServerHandler for LificMcp {
                 ));
             }
             let tool = request.name.clone();
+            let provided: Vec<String> = request
+                .arguments
+                .as_ref()
+                .map(|arguments| arguments.keys().cloned().collect())
+                .unwrap_or_default();
             let tool_context =
                 rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
             let dispatch = || self.dispatch_tool(|| self.tool_router.call(tool_context));
@@ -714,7 +719,7 @@ impl ServerHandler for LificMcp {
                         .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
                         .unwrap_or_default()
                 });
-                arguments::explain_unknown_parameter(&tool, top_level.as_deref(), error)
+                arguments::explain_unknown_parameter(&tool, top_level.as_deref(), &provided, error)
             })
         }
     }
