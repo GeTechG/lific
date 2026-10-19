@@ -130,12 +130,19 @@ impl Credential {
 }
 
 /// Whether a URL's host is a loopback address this machine owns. Unparseable
-/// input is not loopback.
+/// input is not loopback. `host_str` keeps the brackets around an IPv6
+/// literal (`[::1]`), which no address parser accepts, so they come off first.
 fn host_is_loopback(url: &str) -> bool {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| crate::config::is_localhost_host(&host))
+        .is_some_and(|host| {
+            let host = host
+                .strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .unwrap_or(&host);
+            crate::config::is_localhost_host(host)
+        })
 }
 
 /// What the environment says about the token for one target server.
@@ -1045,6 +1052,9 @@ mod tests {
         // The same instance reached over the loopback bind.
         assert_eq!(remote.for_endpoint("http://127.0.0.1:3456"), Some("tok"));
         assert_eq!(remote.for_endpoint("http://localhost:3456"), Some("tok"));
+        // Doctor brackets an IPv6 bind (`host = "::1"`) into its base URL.
+        assert_eq!(remote.for_endpoint("http://[::1]:3456"), Some("tok"));
+        assert_eq!(remote.for_endpoint("http://[fd00::5]:3456"), None);
         // A different remote origin gets nothing.
         assert_eq!(remote.for_endpoint("https://evil.example.com"), None);
         assert_eq!(remote.for_endpoint("http://192.168.1.5:3456"), None);
