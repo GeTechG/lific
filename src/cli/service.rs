@@ -198,13 +198,24 @@ pub fn missing_manager_message() -> String {
 /// the install-time snapshot ([`installed_config`]) and then to the default
 /// candidates.
 pub fn running_config() -> Option<PathBuf> {
-    // Only a `lific start` process is the server witness: any lific
-    // subcommand may carry `--config` (a concurrent `lific doctor` does),
-    // and a witness for "the running server" must not pick one up.
     find_own_processes()
         .iter()
-        .filter(|args| args.get(1).is_some_and(|sub| sub == "start"))
-        .find_map(|args| config_from_cmdline(args))
+        .filter(|witness| is_server_witness(&witness.args))
+        .find_map(|witness| config_from_cmdline(&witness.args, witness.cwd.as_deref()))
+}
+
+/// Whether a process's command line is the *server* for this instance: only a
+/// `lific start` process is, since any lific subcommand may carry `--config`
+/// (a concurrent `lific doctor` does) and a witness for "the running server"
+/// must not pick one up.
+///
+/// The subcommand is read at `argv[1]` deliberately. `lific --config x.toml
+/// start` — a global flag first, which the CLI accepts — is a silent miss by
+/// choice: guessing where the subcommand sits in another process's argv would
+/// risk adopting a process that is not the server, and the install witness and
+/// the candidate search still cover such an instance.
+fn is_server_witness(args: &[String]) -> bool {
+    args.get(1).is_some_and(|sub| sub == "start")
 }
 
 /// The config file the installed background service runs, if a service is
@@ -240,11 +251,22 @@ fn exe_is_ours(exe: &Path, me: &Path) -> bool {
         .is_some_and(|name| name == me.file_name().unwrap_or_default())
 }
 
+/// One candidate process for the live witness: its command line, and the
+/// working directory it ran in when the platform can report one (Linux reads
+/// `/proc/<pid>/cwd`). The cwd is here because a relative `--config` was
+/// resolved against *that* process's directory, not doctor's — see
+/// [`config_from_cmdline`].
+#[derive(Debug)]
+struct ProcessWitness {
+    args: Vec<String>,
+    cwd: Option<PathBuf>,
+}
+
 /// Command lines (`argv` vectors) of *other* processes running this same
 /// lific binary. The per-OS scan is the platform seam; the `--config` parse
 /// ([`config_from_cmdline`]) is shared.
 #[cfg(target_os = "linux")]
-fn find_own_processes() -> Vec<Vec<String>> {
+fn find_own_processes() -> Vec<ProcessWitness> {
     let me = match std::env::current_exe() {
         Ok(me) => me,
         Err(_) => return Vec::new(),
@@ -284,67 +306,208 @@ fn find_own_processes() -> Vec<Vec<String>> {
             .map(|part| String::from_utf8_lossy(part).into_owned())
             .collect();
         if args.len() > 1 {
-            found.push(args);
+            // The same link the kernel used to resolve that process's own
+            // relative paths. Unreadable (another user's process, or one that
+            // exited mid-scan) leaves `None`, which costs only the relative
+            // form of the witness.
+            let cwd = std::fs::read_link(entry.path().join("cwd")).ok();
+            found.push(ProcessWitness { args, cwd });
         }
     }
     found
 }
 
-/// One `ps -axo uid=,command=` line, parsed into this program's argv when the
-/// process belongs to `uid` and its command names this program. Pure, so the
-/// uid gate is testable without `ps` and on every platform.
+/// The pid on one `ps -axo uid=,pid=` line, when that process belongs to
+/// `uid`. Pure, so the ownership gate is testable without `ps` and on every
+/// platform.
+///
+/// `ps` serves only to enumerate here: uid and pid are single columns with no
+/// quoting to reverse-engineer. The command line comes from the kernel
+/// ([`kprocargs2_image`]), because `ps`'s command column is whitespace-joined
+/// and cannot be split back into argv — the default macOS config path contains
+/// a space (`~/Library/Application Support/lific/lific.toml`), so a split there
+/// witnesses `/Users/u/Library/Application`.
 //
-// Only the macOS scan calls this; the allow keeps it compiled for its unit test
-// elsewhere.
+// Only the macOS scan calls this; the allow keeps it compiled for its unit
+// test elsewhere.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn ps_witness_line(line: &str, uid: &str, me: Option<&Path>) -> Option<Vec<String>> {
-    let (owner, rest) = line.trim_start().split_once(|c: char| c.is_whitespace())?;
+fn ps_owned_pid(line: &str, uid: &str) -> Option<i32> {
+    let (owner, pid) = line.trim_start().split_once(|c: char| c.is_whitespace())?;
     if owner != uid {
         return None;
     }
-    let args: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
-    let arg0 = args.first()?;
-    let is_lific =
-        arg0.ends_with("/lific") || me.is_some_and(|me| arg0.as_str() == me.to_string_lossy());
-    is_lific.then_some(args)
+    pid.trim().parse().ok()
 }
 
 #[cfg(target_os = "macos")]
-fn find_own_processes() -> Vec<Vec<String>> {
-    // The uid column gates on ownership before argv is even considered: `ps`
-    // lists every user's processes, and argv is caller-chosen, so without it
-    // any local user could forge a witness. (A same-uid process can still forge
-    // one, but a same-uid process already owns this user's keyring.)
-    let Ok(output) = Command::new("ps").arg("-axo").arg("uid=,command=").output() else {
+fn find_own_processes() -> Vec<ProcessWitness> {
+    // The uid column gates on ownership before any command line is read: `ps`
+    // lists every user's processes, and a process that is not this user's is
+    // not ours to inspect. (A same-uid process can still claim to be lific, but
+    // a same-uid process already owns this user's keyring.)
+    let Ok(output) = Command::new("ps").arg("-axo").arg("uid=,pid=").output() else {
         return Vec::new();
     };
-    let me = std::env::current_exe().ok();
+    // No exe to compare against means no witness, the same answer Linux gives.
+    let Ok(me) = std::env::current_exe() else {
+        return Vec::new();
+    };
     // SAFETY: POSIX getuid() always succeeds and sets no errno.
     let uid = unsafe { libc::getuid() }.to_string();
     output
         .stdout
-        .split(|b| *b == b'\n')
-        .filter_map(|line| ps_witness_line(&String::from_utf8_lossy(line), &uid, me.as_deref()))
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| ps_owned_pid(&String::from_utf8_lossy(line), &uid))
+        .filter_map(kprocargs2_image)
+        .filter(|(exe, _)| exe_is_ours(exe, &me))
+        // `KERN_PROCARGS2` carries no working directory, so a relative
+        // `--config` from this scan has nothing to resolve against and is
+        // dropped rather than guessed; an absolute one is unaffected.
+        .map(|(_, args)| ProcessWitness { args, cwd: None })
         .collect()
 }
 
+/// The executable path and argv in a `KERN_PROCARGS2` buffer: a native-endian
+/// `int argc`, the executable path NUL-terminated, NUL padding, then `argc`
+/// NUL-terminated argument strings.
+///
+/// Pure, so the layout is pinned by a test on every platform and the only
+/// macOS-specific part left is the `sysctl` call that fills the buffer.
+///
+/// `argc` bounds the read deliberately: the environment follows the arguments
+/// in the same buffer, and a witness must never be built from a variable that
+/// merely looks like one.
+///
+/// Padding is skipped together with any empty field before the first argument,
+/// so a process started with an empty `argv[0]` shifts the parse by one. Such a
+/// process cannot be a server, so no witness is lost.
+///
+/// Every collected argument must be non-empty. The buffer's own padding and the
+/// terminator after the last argument are both runs of NUL bytes, so counting
+/// them as arguments would let a truncated buffer invent an empty `--config`
+/// value; a server command line carrying a genuinely empty argument is dropped
+/// for the same reason.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn kprocargs2_parse(blob: &[u8]) -> Option<(PathBuf, Vec<String>)> {
+    let (count, rest) = blob.split_at_checked(std::mem::size_of::<i32>())?;
+    // A negative count is a corrupt buffer, not a command line.
+    let argc = usize::try_from(i32::from_ne_bytes(count.try_into().ok()?)).ok()?;
+    if argc == 0 {
+        return None;
+    }
+    let mut fields = rest.split(|byte| *byte == 0);
+    let exe = fields.next()?;
+    if exe.is_empty() {
+        return None;
+    }
+    let args: Vec<String> = fields
+        .skip_while(|field| field.is_empty())
+        .take(argc)
+        .map(|field| String::from_utf8_lossy(field).into_owned())
+        .collect();
+    (args.len() == argc && args.iter().all(|arg| !arg.is_empty())).then(|| {
+        (
+            PathBuf::from(String::from_utf8_lossy(exe).into_owned()),
+            args,
+        )
+    })
+}
+
+/// The executable and argv of `pid` from the kernel. `None` when the process is
+/// gone, is not this user's to inspect (the kernel refuses it as
+/// `/proc/<pid>/exe` does on Linux), or the buffer does not parse.
+#[cfg(target_os = "macos")]
+fn kprocargs2_image(pid: i32) -> Option<(PathBuf, Vec<String>)> {
+    kprocargs2_parse(&kprocargs2(pid)?)
+}
+
+/// The raw `KERN_PROCARGS2` buffer for `pid`.
+///
+/// `KERN_ARGMAX` is the largest argument area the kernel allows, which is also
+/// the size to ask for; the second call reports the bytes it actually wrote.
+#[cfg(target_os = "macos")]
+fn kprocargs2(pid: i32) -> Option<Vec<u8>> {
+    // SAFETY: both calls hand `sysctl` a valid mib and a buffer this function
+    // owns. The kernel writes at most `size` bytes into that buffer and reports
+    // the length written through the same `size`.
+    unsafe {
+        let mut argmax: libc::c_int = 0;
+        let mut size = std::mem::size_of_val(&argmax);
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let read = libc::sysctl(
+            mib.as_mut_ptr(),
+            u32::try_from(mib.len()).ok()?,
+            (&mut argmax as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        );
+        if read != 0 || argmax <= 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; argmax as usize];
+        let mut size = buffer.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let read = libc::sysctl(
+            mib.as_mut_ptr(),
+            u32::try_from(mib.len()).ok()?,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        );
+        if read != 0 || size == 0 {
+            return None;
+        }
+        buffer.truncate(size);
+        Some(buffer)
+    }
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn find_own_processes() -> Vec<Vec<String>> {
+fn find_own_processes() -> Vec<ProcessWitness> {
     // Windows: the Run key ([`installed_config`]) covers every way Lific
     // starts itself there; a live scan would need PowerShell and adds no
     // witness the Run key lacks.
     Vec::new()
 }
 
-/// The `--config` argument of a `lific start` command line. Pure so tests
-/// exercise the same parse the process scan feeds.
-fn config_from_cmdline(args: &[String]) -> Option<PathBuf> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--config" {
-            return iter.next().map(PathBuf::from);
+/// The `--config` argument of a `lific start` command line, resolved the way
+/// that process resolved it. Pure, including the resolution decision, so the
+/// cwd rule is testable on every platform.
+///
+/// A relative path is only meaningful against the cwd of the process that took
+/// it: `lific start --config lific.toml` in dir A names A's file, and doctor run
+/// from dir B must not read it as B's. `cwd` is `None` when the platform cannot
+/// report one — then a relative path is dropped rather than guessed (an
+/// absolute one is unaffected).
+///
+/// On Windows a drive-less rooted path (`\x\y.toml`) is not absolute: it names
+/// no drive, so it is placed by the server's cwd like a relative path and
+/// dropped without one.
+fn config_from_cmdline(args: &[String], cwd: Option<&Path>) -> Option<PathBuf> {
+    let raw = config_arg(args.iter().cloned())?;
+    if raw.is_absolute() {
+        return Some(raw);
+    }
+    Some(cwd?.join(raw))
+}
+
+/// The `--config` value in a sequence of command-line tokens, in either form
+/// (`--config PATH`, `--config=PATH`).
+///
+/// Every witness format tokenizes its own way — argv, a systemd `ExecStart`
+/// line, launchd `ProgramArguments` — but the flag is spelled one way, so the
+/// rule lives here once. It used to be written per format, and the plist copy
+/// knew only the two-element form, so a hand-edited LaunchAgent naming
+/// `--config=PATH` was silently not a witness at all.
+fn config_arg(tokens: impl Iterator<Item = String>) -> Option<PathBuf> {
+    let mut tokens = tokens;
+    while let Some(token) = tokens.next() {
+        if token == "--config" {
+            return tokens.next().map(PathBuf::from);
         }
-        if let Some(value) = arg.strip_prefix("--config=") {
+        if let Some(value) = token.strip_prefix("--config=") {
             return Some(PathBuf::from(value));
         }
     }
@@ -359,16 +522,8 @@ fn config_from_systemd_unit(contents: &str) -> Option<PathBuf> {
         .lines()
         .find(|line| line.starts_with("ExecStart="))?
         .strip_prefix("ExecStart=")?;
-    let mut tokens = systemd_tokens(exec_start);
-    while let Some(token) = tokens.next() {
-        if token == "--config" {
-            return tokens.next().map(PathBuf::from);
-        }
-        if let Some(value) = token.strip_prefix("--config=") {
-            return Some(PathBuf::from(value));
-        }
-    }
-    None
+    let tokens = systemd_tokens(exec_start);
+    config_arg(tokens)
 }
 
 /// Split a systemd command line into unquoted tokens, inverting
@@ -414,23 +569,21 @@ fn systemd_tokens(line: &str) -> impl Iterator<Item = String> + '_ {
 /// [`launchd_plist`] writes it (`--config` string element followed by the
 /// xml-escaped path). Pure for the same reason as the unit parser.
 fn config_from_plist(contents: &str) -> Option<PathBuf> {
-    let mut strings = contents.lines().filter_map(|line| {
+    let strings = contents.lines().filter_map(|line| {
         let line = line.trim();
-        line.strip_prefix("<string>")?.strip_suffix("</string>")
+        let element = line.strip_prefix("<string>")?.strip_suffix("</string>")?;
+        Some(unescape_xml(element))
     });
-    while let Some(value) = strings.next() {
-        if value == "--config" {
-            return strings.next().map(|escaped| {
-                PathBuf::from(
-                    escaped
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&"),
-                )
-            });
-        }
-    }
-    None
+    config_arg(strings)
+}
+
+/// The inverse of the escaping [`launchd_plist`] applies to element text,
+/// unescaping `&` last so `&amp;lt;` comes back as `&lt;` rather than `<`.
+fn unescape_xml(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 }
 
 /// Where the service definition file lives for this user.
@@ -924,6 +1077,27 @@ mod tests {
         assert_eq!(config_from_plist(&plist), Some(plan().config));
     }
 
+    /// A plist is a file the user can hand-edit, so it may name the config with
+    /// either spelling of the flag. The rule is the same one argv and unit
+    /// files follow, and it belongs in one place: before that, the plist parser
+    /// knew only the two-element form and missed `--config=PATH` silently.
+    #[test]
+    fn launchd_plist_config_parses_the_inline_flag_form() {
+        let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/lific</string>
+    <string>start</string>
+    <string>--config=/Users/u/lific.toml</string>
+  </array>
+</dict></plist>"#;
+        assert_eq!(
+            config_from_plist(plist),
+            Some(PathBuf::from("/Users/u/lific.toml"))
+        );
+    }
+
     #[test]
     fn launchd_plist_config_round_trips_xml_escaped_paths() {
         let mut p = plan();
@@ -932,28 +1106,128 @@ mod tests {
         assert_eq!(config_from_plist(&plist), Some(p.config));
     }
 
+    /// An absolute `--config` path for the running platform. Windows absolutes
+    /// carry a drive prefix, and a leading separator alone is *rooted* there,
+    /// not absolute — `\x\y.toml` names no drive — so a test written with
+    /// `/x/y.toml` would be asserting a relative path on Windows and the
+    /// drop-when-there-is-no-cwd rule would answer `None`.
+    #[cfg(windows)]
+    const ABSOLUTE_CONFIG: &str = r"C:\x\y.toml";
+    #[cfg(not(windows))]
+    const ABSOLUTE_CONFIG: &str = "/x/y.toml";
+
     #[test]
     fn cmdline_config_parses_both_argument_forms() {
-        let plain: Vec<String> = ["lific", "start", "--config", "/x/y.toml"]
+        let plain: Vec<String> = ["lific", "start", "--config", ABSOLUTE_CONFIG]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
-            config_from_cmdline(&plain),
-            Some(PathBuf::from("/x/y.toml"))
+            config_from_cmdline(&plain, None),
+            Some(PathBuf::from(ABSOLUTE_CONFIG))
         );
 
-        let inline: Vec<String> = ["lific", "start", "--config=/x/y.toml"]
+        let inline: Vec<String> = [format!("--config={ABSOLUTE_CONFIG}")]
             .iter()
             .map(|s| s.to_string())
             .collect();
         assert_eq!(
-            config_from_cmdline(&inline),
-            Some(PathBuf::from("/x/y.toml"))
+            config_from_cmdline(&inline, None),
+            Some(PathBuf::from(ABSOLUTE_CONFIG))
         );
 
         let none: Vec<String> = ["lific", "doctor"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(config_from_cmdline(&none), None);
+        assert_eq!(config_from_cmdline(&none, None), None);
+    }
+
+    /// Only a server process is a witness. The subcommand is read at `argv[1]`
+    /// by design: a global flag first (`lific --config x.toml start`) is a
+    /// deliberate silent miss, because guessing where the subcommand sits in
+    /// another process's argv could adopt a process that is not the server —
+    /// and the install witness and candidate search still cover that instance.
+    #[test]
+    fn only_a_lific_start_process_is_a_server_witness() {
+        let args = |argv: &[&str]| Vec::from_iter(argv.iter().map(|arg| (*arg).to_string()));
+
+        assert!(is_server_witness(&args(&[
+            "lific",
+            "start",
+            "--config",
+            "/x/y.toml"
+        ])));
+        // A concurrent doctor or init carries `--config` too, and is not the
+        // server that a witness for "the running server" must mean.
+        assert!(!is_server_witness(&args(&[
+            "lific",
+            "doctor",
+            "--config",
+            "/x/y.toml"
+        ])));
+        assert!(!is_server_witness(&args(&[
+            "lific",
+            "init",
+            "--config",
+            "/x/y.toml"
+        ])));
+        // Pinned so the miss stays deliberate rather than accidental.
+        assert!(!is_server_witness(&args(&[
+            "lific",
+            "--config",
+            "/x/y.toml",
+            "start"
+        ])));
+        assert!(!is_server_witness(&args(&["lific"])));
+        assert!(!is_server_witness(&[]));
+    }
+
+    /// A relative `--config` belongs to the process that took it, not to the
+    /// directory doctor happens to run in: `lific start --config lific.toml`
+    /// started in dir A names A's file. Where the platform cannot report that
+    /// cwd, the relative form is dropped rather than guessed — doctor reporting
+    /// its own directory's file as "the running lific process's config" is the
+    /// false failure this avoids.
+    #[test]
+    fn a_relative_cmdline_config_resolves_against_the_server_cwd() {
+        let args =
+            |argv: &[&str]| -> Vec<String> { argv.iter().map(|s| (*s).to_string()).collect() };
+        let server_cwd = Path::new("/srv/a");
+
+        // Relative, resolved the way the server resolved it.
+        let relative = args(&["lific", "start", "--config", "lific.toml"]);
+        assert_eq!(
+            config_from_cmdline(&relative, Some(server_cwd)),
+            Some(PathBuf::from("/srv/a/lific.toml"))
+        );
+        assert_eq!(
+            config_from_cmdline(&relative, None),
+            None,
+            "a relative path with no cwd must be dropped, not guessed"
+        );
+
+        // The inline form follows the same rule.
+        let inline = args(&["lific", "start", "--config=lific.toml"]);
+        assert_eq!(
+            config_from_cmdline(&inline, Some(server_cwd)),
+            Some(PathBuf::from("/srv/a/lific.toml"))
+        );
+
+        // Absolute is the process's answer regardless of cwd.
+        let absolute = args(&["lific", "start", "--config", ABSOLUTE_CONFIG]);
+        assert_eq!(
+            config_from_cmdline(&absolute, Some(server_cwd)),
+            Some(PathBuf::from(ABSOLUTE_CONFIG))
+        );
+        assert_eq!(
+            config_from_cmdline(&absolute, None),
+            Some(PathBuf::from(ABSOLUTE_CONFIG))
+        );
+
+        // A nested relative path keeps its shape under the cwd.
+        let nested = args(&["lific", "start", "--config", "etc/other.toml"]);
+        assert_eq!(
+            config_from_cmdline(&nested, Some(server_cwd)),
+            Some(PathBuf::from("/srv/a/etc/other.toml"))
+        );
     }
 
     // LIF-292: the plan must anchor to the config file itself, so `--config
@@ -1085,31 +1359,118 @@ mod tests {
         ));
     }
 
-    /// The macOS scan's uid gate: another user's process is refused before its
-    /// argv is read, so a forged command name never becomes a witness.
+    /// The macOS scan enumerates with `ps` (uid and pid are single columns with
+    /// no quoting to reverse-engineer) and reads each command line from the
+    /// kernel. Another user's process is refused before any command line is
+    /// read at all.
     #[test]
-    fn ps_witness_line_gates_on_uid_before_argv() {
-        let me = Path::new("/home/u/.cargo/bin/lific");
-        let line = "  501 /home/u/.cargo/bin/lific start --config /home/u/lific.toml";
+    fn ps_owned_pid_gates_on_uid_before_reading_argv() {
+        assert_eq!(ps_owned_pid("  501  4321", "501"), Some(4321));
+        assert_eq!(ps_owned_pid("501 4321", "501"), Some(4321));
+        // Another user's process, whose command line is not ours to read.
+        assert_eq!(ps_owned_pid("  502  4321", "501"), None);
+        // A truncated or malformed line yields no pid rather than a guess.
+        assert_eq!(ps_owned_pid("  501  not-a-pid", "501"), None);
+        assert_eq!(ps_owned_pid("  501", "501"), None);
+        assert_eq!(ps_owned_pid("", "501"), None);
+    }
 
-        assert_eq!(
-            ps_witness_line(line, "501", Some(me)),
-            Some(vec![
-                "/home/u/.cargo/bin/lific".to_string(),
-                "start".to_string(),
-                "--config".to_string(),
-                "/home/u/lific.toml".to_string(),
-            ])
+    /// A `KERN_PROCARGS2` buffer is `argc`, the executable path, NUL padding,
+    /// then `argc` arguments. Pinned here on every platform so the macOS scan's
+    /// only untested part is the `sysctl` call that fills the buffer.
+    #[test]
+    fn kprocargs2_parses_the_kernel_buffer() {
+        let blob = kprocargs2_blob(
+            "/usr/local/bin/lific",
+            &["lific", "start", "--config", "/x/y.toml"],
+            3,
         );
-        // Another user's process, even one named lific, is refused.
-        assert_eq!(ps_witness_line(line, "502", Some(me)), None);
-        // A same-user process that is not this program is not a witness.
+        let (exe, args) = kprocargs2_parse(&blob).expect("parses");
+        assert_eq!(exe, PathBuf::from("/usr/local/bin/lific"));
         assert_eq!(
-            ps_witness_line("  501 /usr/bin/sleep 10", "501", Some(me)),
-            None
+            args,
+            ["lific", "start", "--config", "/x/y.toml"]
+                .map(str::to_string)
+                .to_vec()
         );
-        // A blank line yields nothing.
-        assert_eq!(ps_witness_line("", "501", Some(me)), None);
+        // The argv the scan feeds the shared parse is the witness's config.
+        assert_eq!(
+            config_arg(args.into_iter()),
+            Some(PathBuf::from("/x/y.toml"))
+        );
+    }
+
+    /// The case the maintainer reproduced: the default macOS config path
+    /// contains a space, so a whitespace split reads the witness as
+    /// `/Users/u/Library/Application` — a path that either warns about nothing
+    /// or fails on a healthy instance. Reading argv from the kernel keeps the
+    /// value whole.
+    #[test]
+    fn kprocargs2_keeps_a_config_path_with_spaces_whole() {
+        let config = "/Users/u/Library/Application Support/lific/lific.toml";
+        let blob = kprocargs2_blob(
+            "/usr/local/bin/lific",
+            &["lific", "start", "--config", config],
+            0,
+        );
+        let (_, args) = kprocargs2_parse(&blob).expect("parses");
+
+        assert_eq!(config_arg(args.into_iter()), Some(PathBuf::from(config)));
+    }
+
+    /// A buffer that does not carry the arguments it claims yields nothing:
+    /// the parse is bounded by `argc`, never by whatever follows in the buffer
+    /// (the environment lives there). The trailing NUL must not read as an
+    /// empty final argument, which is how a truncated buffer would otherwise
+    /// invent one.
+    #[test]
+    fn kprocargs2_rejects_buffers_that_do_not_match_their_argc() {
+        assert_eq!(kprocargs2_parse(&[]), None);
+        assert_eq!(kprocargs2_parse(&[0, 0, 0]), None);
+        assert_eq!(kprocargs2_parse(&0_i32.to_ne_bytes()), None);
+        assert_eq!(kprocargs2_parse(&(-1_i32).to_ne_bytes()), None);
+        // argc with no strings behind it.
+        assert_eq!(kprocargs2_parse(&1_i32.to_ne_bytes()), None);
+        // argc promises three arguments, the buffer carries two.
+        let mut truncated = 3_i32.to_ne_bytes().to_vec();
+        truncated.extend_from_slice(b"/usr/local/bin/lific\0\0lific\0start\0");
+        assert_eq!(kprocargs2_parse(&truncated), None);
+        // An empty executable path is not a command line either.
+        let mut headless = 1_i32.to_ne_bytes().to_vec();
+        headless.extend_from_slice(b"\0\0lific\0");
+        assert_eq!(kprocargs2_parse(&headless), None);
+    }
+
+    /// The macOS fetch and parse against a real buffer: this process's own
+    /// command line, compared against `std::env::args()`. This pins the kernel
+    /// layout that the synthetic blobs above assume — `argc`, the exec path,
+    /// NUL padding, then the arguments — which is the one part Linux and
+    /// Windows CI cannot exercise. macOS runners are the only place it runs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn kprocargs2_reads_this_process_command_line() {
+        let pid = i32::try_from(std::process::id()).expect("a pid fits in i32");
+        let (exe, args) = kprocargs2_image(pid).expect("own command line");
+        let me = std::env::current_exe().expect("own executable path");
+        assert!(exe_is_ours(&exe, &me), "exe: {exe:?}, me: {me:?}");
+        // Every argument, in order, as the process itself sees them: a
+        // whitespace split cannot produce this, which is why the witness reads
+        // the kernel instead.
+        assert_eq!(args, Vec::from_iter(std::env::args()));
+    }
+
+    /// A `KERN_PROCARGS2` buffer as the kernel writes one, for the parser tests:
+    /// `argc`, the executable path, `padding` NUL bytes, then the arguments.
+    fn kprocargs2_blob(exe: &str, argv: &[&str], padding: usize) -> Vec<u8> {
+        let mut blob = (argv.len() as i32).to_ne_bytes().to_vec();
+        blob.extend_from_slice(exe.as_bytes());
+        blob.push(0);
+        blob.extend(std::iter::repeat_n(0, padding));
+        for arg in argv {
+            blob.extend_from_slice(arg.as_bytes());
+            blob.push(0);
+        }
+        blob
     }
 
     /// A forged `argv[0]` must not become a witness. Under the old
@@ -1137,7 +1498,9 @@ mod tests {
         let _ = child.wait();
 
         assert!(
-            !found.iter().any(|args| args.first() == Some(&forged)),
+            !found
+                .iter()
+                .any(|witness| witness.args.first() == Some(&forged)),
             "a process whose argv[0] was forged must not be a witness; found: {found:?}"
         );
     }
