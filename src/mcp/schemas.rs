@@ -285,7 +285,7 @@ pub struct UnlinkIssuesInput {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GetPageInput {
-    #[schemars(description = "Page ID like LIF-DOC-1")]
+    #[schemars(description = "Page ID like LIF-DOC-1, or a workspace page like DOC-1")]
     pub identifier: String,
     #[schemars(description = "Read one section by heading text or anchor, with its subsections")]
     pub section: Option<String>,
@@ -435,7 +435,7 @@ pub struct ManageResourceInput {
     pub project: Option<String>,
     #[schemars(description = "Name; required to create")]
     pub name: Option<String>,
-    #[schemars(description = "Project identifier, e.g. PRO")]
+    #[schemars(description = "Project identifier, e.g. PRO (at most 5 characters, uppercase)")]
     pub identifier: Option<String>,
     #[schemars(description = "Description")]
     pub description: Option<String>,
