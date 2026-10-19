@@ -55,12 +55,15 @@
 //! 4. **service** — the background service installed by `lific init`. No
 //!    service manager on this platform = skipped (the operator's only mode is
 //!    foreground `lific start`; there is nothing to diagnose). Unreadable
-//!    service state = warn. Not installed = warn (the server only runs while
-//!    you keep a terminal open). Installed but not running = warn with the
-//!    restart command and the platform's log hint. Installed and running =
-//!    pass. The check reads no configured value — it inspects the machine's
-//!    installed service — so it still runs when configuration resolution
-//!    failed (see the fail-closed note under config).
+//!    service state = warn. Not installed = skipped: doctor inspects the
+//!    *per-user* service, and its absence says nothing about the instance (a
+//!    system-level unit, a container, or another supervisor may own the
+//!    server), so it is reported without a warning and the `server` check
+//!    carries the alarm. Installed but not running = warn with the restart
+//!    command and the platform's log hint. Installed and running = pass. The
+//!    check reads no configured value — it inspects the machine's installed
+//!    service — so it still runs when configuration resolution failed (see the
+//!    fail-closed note under config).
 //! 5. **server** — HTTP reachability of `http://{host}:{port}/api/health`
 //!    (0.0.0.0 → 127.0.0.1). A 2xx response passes; another HTTP status warns
 //!    while dependent checks continue. Not running warns and skips them.
@@ -969,11 +972,13 @@ enum ServiceObservation {
 fn service_check_outcome(observation: ServiceObservation) -> Check {
     let (mgr, report) = match observation {
         ServiceObservation::NoManager => {
+            // The platform has no service manager: the same machine state
+            // `lific init` and `lific service` report, so they share one
+            // statement rather than doctor phrasing its own.
             return Check::new(
                 "service",
                 Status::Skipped,
-                "no service manager on this platform — the server runs in the foreground \
-                 (`lific start`)",
+                service::missing_manager_message(),
             );
         }
         ServiceObservation::State(_, Err(e)) => {
@@ -986,11 +991,16 @@ fn service_check_outcome(observation: ServiceObservation) -> Check {
         ServiceObservation::State(mgr, Ok(report)) => (mgr, report),
     };
     if !report.installed {
+        // Informational: doctor inspects the *per-user* service, and its
+        // absence says nothing about the instance. Something else may own the
+        // server — a system-level unit, a container, another supervisor — and
+        // the `server` check reports whether anything answers, so a warn here
+        // was false for a healthy instance and pressed toward a second copy.
         return Check::new(
             "service",
-            Status::Warn,
-            "not installed — the server only runs while you keep it started. \
-             Install with `lific service install`",
+            Status::Skipped,
+            "no per-user service installed — `lific service install` starts one at login, \
+             or the server keeps running while you keep it started",
         );
     }
     if !report.active {
@@ -1994,13 +2004,24 @@ mod tests {
         assert!(c.detail.contains("installed and running"));
     }
 
+    /// The maintainer's case: a system-level unit, a container, or any other
+    /// supervisor owns the server, so "not installed" says nothing about the
+    /// instance. It is informational, not a warning — a warn here was false for
+    /// a healthy instance and nudged toward installing a second, per-user copy.
+    /// The `server` check reports whether anything answers.
     #[test]
-    fn service_check_warns_when_not_installed() {
+    fn service_check_reports_not_installed_without_warning() {
         let c = service_check_outcome(ServiceObservation::State(
             Manager::SystemdUser,
             Ok(status_report(false, false)),
         ));
-        assert_eq!(c.status, Status::Warn, "detail: {}", c.detail);
+        assert_eq!(c.status, Status::Skipped, "detail: {}", c.detail);
+        // Says which service it means: doctor only inspects the per-user one.
+        assert!(
+            c.detail.contains("per-user service"),
+            "detail: {}",
+            c.detail
+        );
         assert!(c.detail.contains("lific service install"));
     }
 
@@ -2032,7 +2053,10 @@ mod tests {
     fn service_check_skips_when_there_is_no_service_manager() {
         let c = service_check_outcome(ServiceObservation::NoManager);
         assert_eq!(c.status, Status::Skipped, "detail: {}", c.detail);
-        assert!(c.detail.contains("lific start"));
+        // One statement for this machine state rather than a second copy in
+        // doctor: `lific service install` says the same words about the same
+        // machine, so the two can no longer drift apart.
+        assert_eq!(c.detail, service::missing_manager_message());
     }
 
     #[test]
