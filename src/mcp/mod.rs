@@ -712,14 +712,11 @@ impl ServerHandler for LificMcp {
                 None => dispatch().await,
             };
             result.map_err(|error| {
-                let top_level = self.tool_router.get(&tool).map(|tool| {
-                    tool.input_schema
-                        .get("properties")
-                        .and_then(serde_json::Value::as_object)
-                        .map(|properties| properties.keys().cloned().collect::<Vec<_>>())
-                        .unwrap_or_default()
-                });
-                arguments::explain_unknown_parameter(&tool, top_level.as_deref(), &provided, error)
+                let params = self
+                    .tool_router
+                    .get(&tool)
+                    .map(|tool| arguments::ToolParameters::from_schema(&tool.input_schema));
+                arguments::explain_unknown_parameter(&tool, params, &provided, error)
             })
         }
     }
