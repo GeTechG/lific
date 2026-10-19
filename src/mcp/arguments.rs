@@ -73,10 +73,11 @@ fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<S
         .step_by(2)
         .filter(|name| !name.chars().any(|c| c.is_ascii_uppercase()))
         .collect();
-    if valid.is_empty() && missing {
-        if let Some(top) = top_level {
-            valid.extend(top.iter().map(String::as_str));
-        }
+    if valid.is_empty()
+        && missing
+        && let Some(top) = top_level
+    {
+        valid.extend(top.iter().map(String::as_str));
     }
 
     // A nested object (a plan step) has its own fields; say so rather than
@@ -98,12 +99,10 @@ fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<S
     };
 
     let mut out = format!("{verb} {noun} `{unknown}` in {place}.");
-    // A missing field is always a real, required name -- there is nothing
-    // to suggest.
-    if !missing {
-        if let Some(suggestion) = closest(unknown, &valid) {
-            out.push_str(&format!(" Did you mean `{suggestion}`?"));
-        }
+    if !missing
+        && let Some(suggestion) = closest(unknown, &valid)
+    {
+        out.push_str(&format!(" Did you mean `{suggestion}`?"));
     }
     if valid.is_empty() {
         out.push_str(" It takes no parameters.");
