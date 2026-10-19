@@ -1039,7 +1039,8 @@ fn apply_edit(
     let count = content.matches(old).count();
     match count {
         0 => Err(crate::error::LificError::BadRequest(
-            "old_string not found in content; check exact whitespace and newlines".into(),
+            "old_string not found in the current content; read it fresh and copy the exact text"
+                .into(),
         )),
         1 => Ok(content.replacen(old, new, 1)),
         _ if replace_all => Ok(content.replace(old, new)),
@@ -3411,7 +3412,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Link two issues: blocks, relates_to, or duplicate. For blocks, pass user or from/until instead of source to make target wait on a person or dates."
+        description = "Link two issues: blocks, relates_to, or duplicate. For blocks, source blocks target; pass user or from/until instead of source to make target wait on a person or dates."
     )]
     fn link_issues(&self, Parameters(input): Parameters<LinkIssuesInput>) -> String {
         self.link_issues_inner(input).unwrap_or_else(error_response)
@@ -3577,7 +3578,7 @@ No issues found."
         }))
     }
 
-    #[tool(description = "Create a new page in a project")]
+    #[tool(description = "Create a page in a project, or omit project for a workspace page")]
     fn create_page(&self, Parameters(input): Parameters<CreatePageInput>) -> String {
         self.create_page_inner(input).unwrap_or_else(error_response)
     }
