@@ -32,8 +32,68 @@ impl LificMcp {
         // Stateless HTTP creates a handler per request. Share immutable routes so
         // rmcp's thread-local schema cache doesn't retain a copy on each worker.
         // Calls still receive the current handler's database and session state.
-        static ROUTER: LazyLock<ToolRouter<LificMcp>> = LazyLock::new(LificMcp::tool_router);
+        static ROUTER: LazyLock<ToolRouter<LificMcp>> = LazyLock::new(|| {
+            let mut router = LificMcp::tool_router();
+            for route in router.map.values_mut() {
+                let mut schema = serde_json::Value::Object((*route.attr.input_schema).clone());
+                compact_schema(&mut schema, true);
+                if let serde_json::Value::Object(schema) = schema {
+                    route.attr.input_schema = Arc::new(schema);
+                }
+            }
+            router
+        });
         &ROUTER
+    }
+}
+
+/// LIF-505: strip what a derived input schema says twice or not at all.
+/// Every connected agent pays for `tools/list` on every session, and about
+/// half of it was boilerplate: the draft URL and Rust type name on each
+/// schema, `format: int64` on every integer, and `["string", "null"]` on
+/// every optional field, whose optionality `required` already states. Plain
+/// types are also what Gemini-family clients accept; they reject type
+/// arrays. Validation is unaffected: arguments are checked by serde, and an
+/// omitted field is still `None`.
+pub(crate) fn compact_schema(schema: &mut serde_json::Value, top: bool) {
+    let serde_json::Value::Object(map) = schema else {
+        return;
+    };
+    if top {
+        map.remove("$schema");
+    }
+    map.remove("title");
+    map.remove("format");
+    if map.get("default").is_some_and(serde_json::Value::is_null) {
+        map.remove("default");
+    }
+    if let Some(serde_json::Value::Array(types)) = map.get("type") {
+        let concrete: Vec<serde_json::Value> =
+            types.iter().filter(|t| *t != "null").cloned().collect();
+        if concrete.len() == 1 {
+            map.insert("type".into(), concrete[0].clone());
+        }
+    }
+    // Keys of these maps are field and definition names, not keywords, so
+    // only their values are schemas.
+    for named in ["properties", "$defs", "definitions"] {
+        if let Some(serde_json::Value::Object(children)) = map.get_mut(named) {
+            children
+                .values_mut()
+                .for_each(|child| compact_schema(child, false));
+        }
+    }
+    for single in ["items", "additionalProperties", "not"] {
+        if let Some(child) = map.get_mut(single) {
+            compact_schema(child, false);
+        }
+    }
+    for list in ["anyOf", "oneOf", "allOf", "prefixItems"] {
+        if let Some(serde_json::Value::Array(children)) = map.get_mut(list) {
+            children
+                .iter_mut()
+                .for_each(|child| compact_schema(child, false));
+        }
     }
 }
 
@@ -233,11 +293,6 @@ impl Display for IssueLine<'_> {
         })?;
         self.module
             .map_or(Ok(()), |name| write!(formatter, " (module: {name})"))?;
-        issue
-            .assignment
-            .assignee
-            .as_deref()
-            .map_or(Ok(()), |name| write!(formatter, " @{name}"))?;
         [
             (" blocks:", issue.blocks.as_slice()),
             (" blocked_by:", issue.blocked_by.as_slice()),
@@ -255,7 +310,10 @@ impl Display for IssueLine<'_> {
                 formatter,
             )
         })?;
-        Display::fmt(&super::waits::WaitTokens(&issue.waits), formatter)
+        Display::fmt(&super::waits::WaitTokens(&issue.waits), formatter)?;
+        queries::assignees::describe(issue.needs_human, &issue.assignees).map_or(Ok(()), |who| {
+            write!(formatter, " for:{}", who.replace(", ", ","))
+        })
     }
 }
 
@@ -418,12 +476,24 @@ fn write_similar_issues(
     })
 }
 
+/// LIF-147: an assignment as the query layer takes it, with `"me"` resolved
+/// to `caller` (see [`LificMcp::caller_username`]).
+fn resolve_assignee_names(
+    names: Option<Vec<String>>,
+    caller: Option<&str>,
+) -> Result<Option<Vec<String>>, crate::error::LificError> {
+    names
+        .map(|mut names| queries::assignees::resolve_me(&mut names, caller).map(|()| names))
+        .transpose()
+}
+
 /// Create one `create_issue` batch item on the batch's transaction (LIF-478).
 fn create_batch_item(
     conn: &rusqlite::Connection,
     project_id: i64,
     item: &CreateIssueItem,
     attachments: models::AttachmentActor,
+    caller: Option<&str>,
 ) -> Result<models::Issue, crate::error::LificError> {
     use crate::error::LificError;
     if item.title.trim().is_empty() {
@@ -452,9 +522,9 @@ fn create_batch_item(
             start_date: item.start_date.clone(),
             target_date: item.target_date.clone(),
             labels,
-            assignee: item.assignee.clone(),
             set_properties: item.set_properties.clone().unwrap_or_default(),
             source: None,
+            assignees: resolve_assignee_names(item.assignees.clone(), caller)?,
             attachments,
         },
     )
@@ -970,7 +1040,8 @@ fn apply_edit(
     let count = content.matches(old).count();
     match count {
         0 => Err(crate::error::LificError::BadRequest(
-            "old_string not found in content; check exact whitespace and newlines".into(),
+            "old_string not found in the current content; read it fresh and copy the exact text"
+                .into(),
         )),
         1 => Ok(content.replacen(old, new, 1)),
         _ if replace_all => Ok(content.replace(old, new)),
@@ -1514,6 +1585,19 @@ impl Display for ActivityLine<'_> {
                 label,
                 activity.old_value.as_deref().unwrap_or("?")
             ),
+            // LIF-147: assignment.
+            "assign" => write!(
+                formatter,
+                "{} +assignee {}",
+                label,
+                activity.new_value.as_deref().unwrap_or("?")
+            ),
+            "unassign" => write!(
+                formatter,
+                "{} -assignee {}",
+                label,
+                activity.old_value.as_deref().unwrap_or("?")
+            ),
             other => write!(formatter, "{label} {other}"),
         }
     }
@@ -1860,7 +1944,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Read the audit log: who changed what, when, and through which door (web UI, MCP, API, CLI). Takes an issue, page, or project ID; project scope covers the whole feed. Newest-first with old and new values; pass since to read forward from a timestamp."
+        description = "Read who changed what and when, and through which interface, for an issue, page, or project. Newest first; since reads forward."
     )]
     fn get_activity(&self, Parameters(input): Parameters<GetActivityInput>) -> String {
         self.get_activity_inner(input)
@@ -2017,7 +2101,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "Call first when resuming a project: active plans with next steps, blocked, workable and active issues, key pages (metadata only) and, with since, what changed. Bounded to about 6,000 characters."
+        description = "Call first when resuming a project: plans and next steps, blocked, workable and active issues, key pages, and with since, what changed. About 6,000 characters."
     )]
     fn get_briefing(&self, Parameters(input): Parameters<GetBriefingInput>) -> String {
         self.get_briefing_inner(input)
@@ -2025,7 +2109,7 @@ impl LificMcp {
     }
 
     #[tool(
-        description = "List issues for a project, or with members=[\"me\"] across the projects where you hold a role (active and todo, like the web home page); roles=[\"lead\",\"maintainer\"] keeps the projects you answer for. workable=true gives issues with no blockers, blocked=true for issues with at least one blocker."
+        description = "List a project's issues, or with members, issues across projects. A row with for: needs a person; agents take rows without it."
     )]
     fn list_issues(&self, Parameters(input): Parameters<ListIssuesInput>) -> String {
         self.list_issues_inner(input).unwrap_or_else(error_response)
@@ -2123,7 +2207,6 @@ impl LificMcp {
                         (Some(name), Some(pid)) => Some(names::stored_label_name(conn, pid, name)?),
                         _ => None,
                     },
-                    assignee: input.assignee.clone(),
                     workable: input.workable,
                     blocked: input.blocked,
                     created_since: input.created_since.clone(),
@@ -2134,6 +2217,8 @@ impl LificMcp {
                     order: input.order.clone(),
                     limit: Some(limit),
                     offset: Some(offset),
+                    assignee: input.assignee.clone(),
+                    caller_user_id: crate::authz::effective_user(conn, &identity).map(|u| u.id),
                 },
             )
         })?;
@@ -2216,14 +2301,24 @@ No issues found."
             None => None,
         };
         let visible = visible_project_ids_mcp(&self.db)?;
-        let (projects, rosters) = self.read(|conn| {
+        let identity = super::current_identity(&self.db).map(|identity| identity.user);
+        let (projects, mut rosters, caller, team) = self.read(|conn| {
             Ok((
                 queries::list_projects(conn)?,
                 queries::members::rosters_by_project(conn)?,
+                crate::authz::effective_user(conn, &identity),
+                queries::users::has_several_active_humans(conn)?,
             ))
         })?;
-        let roster = |pid: i64| rosters.get(&pid).map_or(&[][..], Vec::as_slice);
         let mut projects = filter_visible(projects, &visible, |p| Some(p.id));
+        if !team {
+            roles::credit_solo_owner(
+                &mut rosters,
+                projects.iter().map(|project| project.id),
+                caller.as_ref(),
+            );
+        }
+        let roster = |pid: i64| rosters.get(&pid).map_or(&[][..], Vec::as_slice);
         if let Some(pid) = only {
             projects.retain(|project| project.id == pid);
             if let Some(project) = projects.first()
@@ -2257,9 +2352,7 @@ No issues found."
         }))
     }
 
-    #[tool(
-        description = "Get an issue by ID (e.g. LIF-1): full details plus the last 3 comments by default."
-    )]
+    #[tool(description = "Get an issue with its details and last 3 comments.")]
     fn get_issue(&self, Parameters(input): Parameters<GetIssueInput>) -> String {
         self.get_issue_inner(input).unwrap_or_else(error_response)
     }
@@ -2356,17 +2449,16 @@ No issues found."
                 )
             })?;
             issue
-                .assignment
-                .assignee
-                .as_deref()
-                .map_or(Ok(()), |name| writeln!(output, "Assignee: @{name}"))?;
-            issue
                 .properties
                 .iter()
                 .try_for_each(|(name, value)| writeln!(output, "Property {name}: {value}"))?;
             crate::checklist::checklist(&issue.description).map_or(Ok(()), |list| {
                 writeln!(output, "Checklist: {}/{} done", list.done, list.total)
             })?;
+            match queries::assignees::describe(issue.needs_human, &issue.assignees) {
+                Some(who) => writeln!(output, "Assigned: {who} (a person must do this)"),
+                None => Ok(()),
+            }?;
             [
                 ("Blocks: ", rels.blocks.as_slice()),
                 ("Blocked by: ", rels.blocked_by.as_slice()),
@@ -2498,7 +2590,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Export as markdown: an issue (PRO-42), a page (PRO-DOC-3), or a whole project (PRO). A project returns its issue and page documents a page at a time; continue with offset."
+        description = "Export Markdown for an issue, a page, or a whole project. A project comes back in pages; continue with offset."
     )]
     async fn export(&self, Parameters(input): Parameters<ExportInput>) -> String {
         self.export_inner(input)
@@ -2581,10 +2673,31 @@ No issues found."
         }
     }
 
-    #[tool(description = "Create a new issue in a project, or several at once with issues")]
+    #[tool(description = "Create an issue, or up to 50 with issues.")]
     fn create_issue(&self, Parameters(input): Parameters<CreateIssueInput>) -> String {
         self.create_issue_inner(input)
             .unwrap_or_else(error_response)
+    }
+
+    /// LIF-147: the username `"me"` stands for in `names`, read only when
+    /// `names` says `me`. A bot's "me" is its owner, the same rule
+    /// `list_issues(members=["me"])` uses. Resolved before a write
+    /// transaction opens, never inside one.
+    fn caller_username(&self, names: Option<&[String]>) -> Result<Option<String>, String> {
+        let says_me = names.is_some_and(|names| {
+            names.iter().any(|name| {
+                name.trim()
+                    .trim_start_matches('@')
+                    .eq_ignore_ascii_case("me")
+            })
+        });
+        if !says_me {
+            return Ok(None);
+        }
+        let identity = super::current_identity(&self.db).map(|identity| identity.user);
+        self.read(
+            |conn| Ok(crate::authz::effective_user(conn, &identity).map(|user| user.username)),
+        )
     }
 
     fn create_issue_inner(&self, mut input: CreateIssueInput) -> Result<String, String> {
@@ -2602,6 +2715,7 @@ No issues found."
             None => None,
         };
         drop(conn);
+        let caller = self.caller_username(input.assignees.as_deref())?;
         let issue = self.transaction(|conn| {
             // LIF-369/LIF-409: resolve the actor and re-assert the role on the
             // writing connection first; `create_issue` then links the
@@ -2627,9 +2741,9 @@ No issues found."
                         pid,
                         input.labels.as_deref().unwrap_or_default(),
                     )?,
-                    assignee: input.assignee.clone(),
                     set_properties: input.set_properties.clone().unwrap_or_default(),
                     source: None,
+                    assignees: resolve_assignee_names(input.assignees.clone(), caller.as_deref())?,
                     attachments,
                 },
             )
@@ -2692,7 +2806,7 @@ No issues found."
             || input.start_date.is_some()
             || input.target_date.is_some()
             || input.set_properties.is_some()
-            || input.assignee.is_some();
+            || input.assignees.is_some();
         if has_single_fields {
             return Err(
                 "with issues, set title and the other fields on each item; only project applies to the whole batch"
@@ -2713,6 +2827,7 @@ No issues found."
             resolve_project(&conn, self.project_or_bound(input.project.as_deref())?)?
         };
         require_role_mcp(&self.db, pid, models::Role::Maintainer)?;
+        let caller = self.caller_username(Some(&["me".to_string()]))?;
         let created = self.transaction(|conn| {
             // Same actor re-check as the single create, once for the batch.
             let attachments = sync_link_actor_conn(conn, Some(pid), models::Role::Maintainer)?;
@@ -2720,7 +2835,7 @@ No issues found."
                 .iter()
                 .enumerate()
                 .map(|(index, item)| {
-                    create_batch_item(conn, pid, item, attachments)
+                    create_batch_item(conn, pid, item, attachments, caller.as_deref())
                         .map_err(|error| at_batch_item(index, error))
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -2780,9 +2895,7 @@ No issues found."
         }))
     }
 
-    #[tool(
-        description = "Update an existing issue by identifier. Only provided fields are changed."
-    )]
+    #[tool(description = "Update an issue. Only the fields you pass change.")]
     fn update_issue(&self, Parameters(input): Parameters<UpdateIssueInput>) -> String {
         self.update_issue_inner(input)
             .unwrap_or_else(error_response)
@@ -2812,6 +2925,7 @@ No issues found."
             Ok((id, project_id))
         })?;
         require_role_mcp(&self.db, project_id, models::Role::Maintainer)?;
+        let caller = self.caller_username(input.assignees.as_deref())?;
         let (issue, cascade_action, cascaded_steps, verification) = self.transaction(|conn| {
             // Migration 020's cascades key exclusively on transitions to or
             // from `done`, not on the broader cancelled/open distinction.
@@ -2871,15 +2985,11 @@ No issues found."
                             names::stored_label_names(conn, previous_issue.project_id, labels)
                         })
                         .transpose()?,
-                    // Same sentinel as `module`: "" unassigns.
-                    assignee: input
-                        .assignee
-                        .clone()
-                        .map(|name| Some(name).filter(|name| !name.is_empty())),
                     set_properties: input.set_properties.clone().unwrap_or_default(),
                     unset_properties: input.unset_properties.clone().unwrap_or_default(),
                     // LIF-441: omitted means last-writer-wins, unchanged.
                     expected_seq: input.expected_seq,
+                    assignees: resolve_assignee_names(input.assignees.clone(), caller.as_deref())?,
                     attachments,
                     ..Default::default()
                 },
@@ -2975,7 +3085,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Apply field changes to matching issues in one call. At most 500 matching issues are selected; narrow filters when more matches exist. Returns the number of issues updated."
+        description = "Change every matching issue in one call, at most 500; narrow the filters for more. Returns the count."
     )]
     fn bulk_update(&self, Parameters(input): Parameters<BulkUpdateInput>) -> String {
         self.bulk_update_inner(input).unwrap_or_else(error_response)
@@ -2996,6 +3106,9 @@ No issues found."
             None => None,
         };
         drop(conn);
+        let caller = self.caller_username(input.set_assignees.as_deref())?;
+        let set_assignees = resolve_assignee_names(input.set_assignees.clone(), caller.as_deref())
+            .map_err(|e| e.to_string())?;
         // Cap the selection like get_board does; bulk changes over 500 issues
         // in a single call are out of scope for this tool.
         const BULK_CAP: i64 = 500;
@@ -3038,6 +3151,7 @@ No issues found."
                                 )
                                 .map_err(crate::error::LificError::BadRequest)?,
                                 module_id: set_module_id.map(Some),
+                                assignees: set_assignees.clone(),
                                 ..Default::default()
                             },
                         )
@@ -3056,7 +3170,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Edit an issue by replacing an exact string. Targets the description by default; pass field='title' for the title. Fails if old_string is missing or ambiguous (unless replace_all=true). Cheaper than update_issue for small changes."
+        description = "Replace one exact string in an issue's description, or title with field='title'. Cheaper than update_issue for small edits."
     )]
     fn edit_issue(&self, Parameters(input): Parameters<EditIssueInput>) -> String {
         self.edit_issue_inner(input).unwrap_or_else(error_response)
@@ -3145,7 +3259,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Board view of issues grouped by status (default), priority, or module. Done/cancelled are count-only stubs unless include_closed=true."
+        description = "Issues grouped by status (default), priority, or module. Closed columns show only counts unless include_closed=true."
     )]
     fn get_board(&self, Parameters(input): Parameters<GetBoardInput>) -> String {
         self.get_board_inner(input).unwrap_or_else(error_response)
@@ -3314,7 +3428,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Link two issues with a relation: blocks, relates_to, or duplicate. A blocks link with user or from/until instead of source makes target wait on a person or dates."
+        description = "Link two issues: blocks, relates_to, or duplicate. For blocks, source blocks target; pass user or from/until instead of source to make target wait on a person or dates."
     )]
     fn link_issues(&self, Parameters(input): Parameters<LinkIssuesInput>) -> String {
         self.link_issues_inner(input).unwrap_or_else(error_response)
@@ -3406,7 +3520,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Get a page by identifier (e.g. LIF-DOC-1). Pages over 30,000 chars return their outline and opening; read the rest by section."
+        description = "Get a page. Over 30,000 characters you get its outline and opening; read the rest by section."
     )]
     fn get_page(&self, Parameters(input): Parameters<GetPageInput>) -> String {
         self.get_page_inner(input).unwrap_or_else(error_response)
@@ -3480,7 +3594,7 @@ No issues found."
         }))
     }
 
-    #[tool(description = "Create a new page in a project")]
+    #[tool(description = "Create a page in a project, or omit project for a workspace page")]
     fn create_page(&self, Parameters(input): Parameters<CreatePageInput>) -> String {
         self.create_page_inner(input).unwrap_or_else(error_response)
     }
@@ -3541,7 +3655,7 @@ No issues found."
         }))
     }
 
-    #[tool(description = "Update a page by identifier. Only provided fields are changed.")]
+    #[tool(description = "Update a page. Only the fields you pass change.")]
     fn update_page(&self, Parameters(input): Parameters<UpdatePageInput>) -> String {
         self.update_page_inner(input).unwrap_or_else(error_response)
     }
@@ -3615,7 +3729,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Edit a page by exact string replacement; same contract as edit_issue. Targets the content by default; pass field='title' for the title."
+        description = "Replace one exact string in a page's content, or title with field='title'."
     )]
     fn edit_page(&self, Parameters(input): Parameters<EditPageInput>) -> String {
         self.edit_page_inner(input).unwrap_or_else(error_response)
@@ -3693,9 +3807,7 @@ No issues found."
         }))
     }
 
-    #[tool(
-        description = "Delete any resource by type and identifier. Types: issue, page, plan, project, module, label, folder."
-    )]
+    #[tool(description = "Delete an issue, page, plan, project, module, label, or folder.")]
     fn delete(&self, Parameters(input): Parameters<DeleteInput>) -> String {
         self.delete_inner(input).unwrap_or_else(error_response)
     }
@@ -3799,7 +3911,7 @@ No issues found."
     }
 
     #[tool(
-        description = "List resources by type: project, module, label, folder, page, issue, or plan. Most types need a project identifier. Project rows show members by role, your role and issue counts per status; members=[\"me\"] keeps only your projects."
+        description = "List projects, modules, labels, folders, pages, issues, or plans. Most types need project. Project rows show members, your role, and counts per status."
     )]
     fn list_resources(&self, Parameters(input): Parameters<ListResourcesInput>) -> String {
         self.list_resources_inner(input)
@@ -3878,7 +3990,7 @@ No issues found."
                 };
                 let visible = visible_project_ids_mcp(&self.db)?;
                 let identity = super::current_identity(&self.db).map(|identity| identity.user);
-                let (ps, stats, rosters, caller, counts) = self.read(|conn| {
+                let (ps, stats, mut rosters, caller, counts, team) = self.read(|conn| {
                     Ok((
                         queries::list_projects(conn)?,
                         queries::project_agent_stats(conn)?,
@@ -3887,11 +3999,21 @@ No issues found."
                         // owner, so "you" matches what the caller may see.
                         crate::authz::effective_user(conn, &identity),
                         queries::count_issues_by_status_all(conn)?,
+                        queries::users::has_several_active_humans(conn)?,
                     ))
                 })?;
+                // A single-person instance's roster is always just its owner.
+                let show_roster = team || show_members.is_some();
                 let mut ps = filter_visible(ps, &visible, |p| Some(p.id));
                 if let Some(pid) = only {
                     ps.retain(|project| project.id == pid);
+                }
+                if !team {
+                    roles::credit_solo_owner(
+                        &mut rosters,
+                        ps.iter().map(|project| project.id),
+                        caller.as_ref(),
+                    );
                 }
                 let filter = self.read(|conn| {
                     Ok(roles::MemberFilter::parse(
@@ -3926,15 +4048,17 @@ No issues found."
                         stats.get(&project.id).map_or(Ok(()), |stats| {
                             write!(output, "{}", ProjectAgentStats { stats, now })
                         })?;
-                        write!(
-                            output,
-                            "{}",
-                            roles::ProjectRoster {
-                                members: rosters.get(&project.id).map_or(&[], Vec::as_slice),
-                                caller: caller.as_ref(),
-                                show: show_members.as_deref(),
-                            }
-                        )?;
+                        if show_roster {
+                            write!(
+                                output,
+                                "{}",
+                                roles::ProjectRoster {
+                                    members: rosters.get(&project.id).map_or(&[], Vec::as_slice),
+                                    caller: caller.as_ref(),
+                                    show: show_members.as_deref(),
+                                }
+                            )?;
+                        }
                         write!(
                             output,
                             "{}",
@@ -4148,7 +4272,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Create or update a project, module, label, or folder. Create project requires name and identifier; project update requires project=<IDENT>; module/label/folder create requires project and name; module/label/folder update requires project and current_name. Use delete for deletion."
+        description = "Create or update a project, module, label, or folder. Project: name and identifier to create, project to update. Others: project, plus name to create or current_name to update."
     )]
     fn manage_resource(&self, Parameters(input): Parameters<ManageResourceInput>) -> String {
         self.manage_resource_inner(input.normalize_quotes())
@@ -4399,9 +4523,7 @@ No issues found."
         }
     }
 
-    #[tool(
-        description = "Add a comment to an issue (LIF-42) or page (LIF-DOC-3; DOC-3 for workspace pages). The author is the authenticated user."
-    )]
+    #[tool(description = "Add a comment to an issue or page. The author is the caller.")]
     fn add_comment(&self, Parameters(input): Parameters<AddCommentInput>) -> String {
         self.add_comment_inner(input).unwrap_or_else(error_response)
     }
@@ -4464,7 +4586,7 @@ No issues found."
     }
 
     #[tool(
-        description = "List comments on an issue (LIF-42) or page (LIF-DOC-3; DOC-3 for workspace pages). Returns the 50 newest by default; page back with offset, or pass order=asc to read oldest first."
+        description = "List comments on an issue or page: the 50 newest by default. Page with offset, or order=asc for oldest first."
     )]
     fn list_comments(&self, Parameters(input): Parameters<ListCommentsInput>) -> String {
         self.list_comments_inner(input)
@@ -4614,7 +4736,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Edit a comment by id. Either pass old_string/new_string for exact string replacement (same contract as edit_issue), or pass content to replace the entire body. Author or admin only; @mentions re-resolve."
+        description = "Edit a comment: old_string/new_string replaces one exact string, content replaces the body. Author or admin only."
     )]
     fn edit_comment(&self, Parameters(input): Parameters<EditCommentInput>) -> String {
         self.edit_comment_inner(input)
@@ -4743,7 +4865,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Create a nestable step-by-step plan that survives outside the context window. Steps can mirror issues via 'issue': closing the issue completes the step and vice versa."
+        description = "Create a nested step plan that outlives the session. A step with issue mirrors it: closing either closes both."
     )]
     fn create_plan(&self, Parameters(input): Parameters<CreatePlanInput>) -> String {
         self.create_plan_inner(input).unwrap_or_else(error_response)
@@ -4808,7 +4930,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Rehydrate a plan's full step tree (e.g. LIF-PLAN-3) when resuming work. Step lines show the #id used by edit_plan_step and update_plan_step, done state, and linked issues."
+        description = "Get a plan's full step tree. Each step shows its #id (the step_id), done state, and linked issue."
     )]
     fn get_plan(&self, Parameters(input): Parameters<GetPlanInput>) -> String {
         self.get_plan_inner(input).unwrap_or_else(error_response)
@@ -4824,7 +4946,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Edit a plan step's text by exact string replacement; same contract as edit_issue. Targets description by default; pass field='title'."
+        description = "Replace one exact string in a plan step's description, or title with field='title'."
     )]
     fn edit_plan_step(&self, Parameters(input): Parameters<EditPlanStepInput>) -> String {
         self.edit_plan_step_inner(input)
@@ -4883,7 +5005,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Mutate a plan or one step. With step_id: step CRUD, done toggling, attach/detach issue (linked issues sync state). Without step_id: update the plan itself; plan status never closes the anchor issue. Returns a delta."
+        description = "Change one step (step_id): done, rename, attach or detach an issue, add a child, move, delete. Without step_id: change the plan or add a top-level step. Plan status never closes the anchor issue."
     )]
     fn update_plan_step(&self, Parameters(input): Parameters<UpdatePlanStepInput>) -> String {
         self.update_plan_step_inner(input)
@@ -4891,6 +5013,37 @@ No issues found."
     }
 
     fn update_plan_step_inner(&self, input: UpdatePlanStepInput) -> Result<String, String> {
+        // LIF-503: these act on an existing step. Without step_id they used
+        // to be dropped while the receipt still said "Updated plan", which
+        // agents read as success.
+        if input.add_child_title.is_none()
+            && (input.add_child_issue.is_some() || input.add_child_description.is_some())
+        {
+            return Err("add_child_issue and add_child_description need add_child_title.".into());
+        }
+        if input.step_id.is_none() {
+            let step_only = [
+                ("done", input.done.is_some()),
+                ("attach_issue", input.attach_issue.is_some()),
+                ("detach_issue", input.detach_issue.is_some()),
+                ("move_parent_step_id", input.move_parent_step_id.is_some()),
+                ("move_to_root", input.move_to_root.is_some()),
+                ("move_position", input.move_position.is_some()),
+                ("delete", input.delete.is_some()),
+            ];
+            if let Some((name, _)) = step_only.iter().find(|(_, set)| *set) {
+                return Err(format!(
+                    "{name} needs step_id. Without step_id only plan fields and add_child_title (a top-level step) apply."
+                ));
+            }
+        } else if input.status.is_some()
+            || input.anchor_issue.is_some()
+            || input.clear_anchor.is_some()
+        {
+            return Err(
+                "status, anchor_issue and clear_anchor change the plan; omit step_id.".into(),
+            );
+        }
         // LIF-198: Maintainer on the plan's own project gates every mutation
         // below (plan-level and step-level alike).
         let plan_project_id = self.read(|conn| {
@@ -4937,16 +5090,36 @@ No issues found."
                         (None, Some(true)) => Some(None),
                         _ => None,
                     };
-                    queries::plans::update_plan(
-                        conn,
-                        plan_id,
-                        &models::UpdatePlan {
-                            title: input.title.clone(),
-                            status: input.status.clone(),
-                            issue_id: anchor,
-                        },
-                    )?;
-                    notes.push("Updated plan".into());
+                    if input.title.is_some() || input.status.is_some() || anchor.is_some() {
+                        queries::plans::update_plan(
+                            conn,
+                            plan_id,
+                            &models::UpdatePlan {
+                                title: input.title.clone(),
+                                status: input.status.clone(),
+                                issue_id: anchor,
+                            },
+                        )?;
+                        notes.push("Updated plan".into());
+                    }
+                    if let Some(ref step_title) = input.add_child_title {
+                        let step_issue = match &input.add_child_issue {
+                            Some(ident) => Some(queries::resolve_identifier(conn, ident)?),
+                            None => None,
+                        };
+                        let new_id = queries::plans::add_step(
+                            conn,
+                            plan_id,
+                            None,
+                            step_title,
+                            input.add_child_description.as_deref().unwrap_or(""),
+                            step_issue,
+                        )?;
+                        notes.push(format!("Added top-level step #{new_id}"));
+                    }
+                    if notes.is_empty() {
+                        notes.push("No changes specified".into());
+                    }
                 }
                 // ── Step-level update ──
                 Some(step_id) => {
@@ -5115,7 +5288,7 @@ No issues found."
     // ── Attachments (LIF-418) ────────────────────────────────
 
     #[tool(
-        description = "Upload a file (base64) and get a markdown snippet to embed. Optionally links it to an issue (LIF-42), page (LIF-DOC-3), or comment. Max 10 MiB; images, PDF, zip, SVG and plain text only."
+        description = "Upload a base64 file (max 10 MiB; images, PDF, zip, SVG, plain text) and get Markdown to embed. Optionally link it to an issue, page, or comment."
     )]
     fn upload_attachment(&self, Parameters(input): Parameters<UploadAttachmentInput>) -> String {
         self.upload_attachment_inner(input)
@@ -5244,7 +5417,7 @@ No issues found."
     }
 
     #[tool(
-        description = "Read an attachment by ID: paged text, inline images, or metadata plus a download URL."
+        description = "Read attachment text, images, or binary content; HTTP may return a download URL."
     )]
     fn get_attachment(
         &self,
@@ -5312,23 +5485,47 @@ No issues found."
         let download_url = current_issue_link_context()
             .as_deref()
             .and_then(|context| context.attachment_url(attachment.id))
-            .map_or_else(
-                || format!("/api/attachments/{}", attachment.id),
-                |url| url.to_string(),
-            );
-        Ok(vec![Content::text(format!(
-            "attachment {}: {} ({}, {}, sha {}). Binary, download at {download_url}",
+            .map(|url| url.to_string());
+        let metadata = format!(
+            "attachment {}: {} ({}, {}, sha {})",
             attachment.id,
             attachment.filename,
             attachment.mime,
             HumanSize(attachment.size_bytes),
             &attachment.sha256[..attachment.sha256.len().min(12)]
-        ))])
+        );
+        match download_url {
+            Some(url) => Ok(vec![Content::text(format!(
+                "{metadata}. Binary, download at {url}"
+            ))]),
+            None => {
+                let bytes = self
+                    .store
+                    .read(&attachment.sha256)
+                    .map_err(sanitize_error)?;
+                Ok(vec![
+                    Content::text(format!(
+                        "{metadata}. Binary content is attached as an MCP resource."
+                    )),
+                    Content::resource(
+                        rmcp::model::ResourceContents::blob(
+                            base64::engine::general_purpose::STANDARD.encode(&bytes),
+                            format!("attachment://{}", attachment.id),
+                        )
+                        .with_mime_type(
+                            if attachment.mime == "image/svg+xml" {
+                                "application/octet-stream"
+                            } else {
+                                &attachment.mime
+                            },
+                        ),
+                    ),
+                ])
+            }
+        }
     }
 
-    #[tool(
-        description = "List attachments on an issue (LIF-42) or page (LIF-DOC-3), or across a whole project."
-    )]
+    #[tool(description = "List attachments on an issue or page, or in a project.")]
     fn list_attachments(&self, Parameters(input): Parameters<ListAttachmentsInput>) -> String {
         self.list_attachments_inner(input)
             .unwrap_or_else(error_response)
@@ -5732,6 +5929,10 @@ mod tests_page_reads;
 mod tests_waits;
 
 #[cfg(test)]
+#[path = "tests_assignees.rs"]
+mod tests_assignees;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn encoded_tool_result_bytes_matches_small_unicode_and_large_payloads() {
@@ -5870,7 +6071,7 @@ mod tests {
         result
     }
 
-    fn project_id_for(mcp: &LificMcp, identifier: &str) -> i64 {
+    pub(super) fn project_id_for(mcp: &LificMcp, identifier: &str) -> i64 {
         mcp.read(|conn| queries::resolve_project_identifier(conn, identifier))
             .expect("project id")
     }
@@ -6661,59 +6862,6 @@ mod tests {
         );
         let conn = m.db.read().unwrap();
         assert_eq!(queries::get_issue(&conn, 1).unwrap().title, "Carrier");
-    }
-
-    #[test]
-    fn the_assignee_is_set_shown_filtered_and_cleared_with_an_empty_string() {
-        let (m, _guard) = mcp();
-        seed_project(&m, "Test", "ASG");
-        let created = m.create_issue(Parameters(CreateIssueInput {
-            project: Some("ASG".into()),
-            title: "Mine".into(),
-            assignee: Some("admin".into()),
-            ..Default::default()
-        }));
-        assert!(created.contains("ASG-1"), "got: {created}");
-        m.create_issue(Parameters(CreateIssueInput {
-            project: Some("ASG".into()),
-            title: "Free".into(),
-            ..Default::default()
-        }));
-
-        let detail = m.get_issue(Parameters(GetIssueInput {
-            identifier: "ASG-1".into(),
-            ..Default::default()
-        }));
-        assert!(detail.contains("Assignee: @admin\n"), "got: {detail}");
-        let list = |assignee: Option<&str>| {
-            m.list_issues(Parameters(ListIssuesInput {
-                project: Some("ASG".into()),
-                assignee: assignee.map(str::to_string),
-                ..Default::default()
-            }))
-        };
-        let mine = list(Some("admin"));
-        assert!(mine.starts_with("1 issues:"), "got: {mine}");
-        assert!(mine.contains("Mine @admin"), "got: {mine}");
-        assert!(list(None).starts_with("2 issues:"));
-
-        let refused = m.update_issue(Parameters(UpdateIssueInput {
-            identifier: "ASG-2".into(),
-            assignee: Some("nobody".into()),
-            ..Default::default()
-        }));
-        assert!(
-            refused.contains("no active user named 'nobody'"),
-            "got: {refused}"
-        );
-
-        let cleared = m.update_issue(Parameters(UpdateIssueInput {
-            identifier: "ASG-1".into(),
-            assignee: Some(String::new()),
-            ..Default::default()
-        }));
-        assert!(!cleared.starts_with("Error"), "got: {cleared}");
-        assert_eq!(list(Some("admin")), "No issues found.");
     }
 
     #[test]
@@ -8070,12 +8218,13 @@ mod tests {
             "got: {recent}"
         );
         assert!(recent.contains(" ago) | "), "got: {recent}");
-        // GitHub #87 appends the roster and status counts after the stats.
+        // GitHub #87 appends status counts after the stats; a single-person
+        // instance leaves the roster out.
         assert_eq!(
             result
                 .lines()
                 .find(|line| line.starts_with("- EMP | Empty")),
-            Some("- EMP | Empty | no members | you: admin | no issues"),
+            Some("- EMP | Empty | no issues"),
             "fresh empty project must have no stats suffix: {result}"
         );
         assert!(
@@ -8456,7 +8605,6 @@ mod tests {
             source: None,
             labels: vec!["bug".into()],
             properties: Default::default(),
-            assignment: Default::default(),
             last_log_at: None,
             blocks: vec!["T-2".into()],
             blocked_by: vec![],
@@ -8464,6 +8612,8 @@ mod tests {
             duplicates: vec!["T-3".into()],
             duplicated_by: vec!["T-4".into()],
             waits: vec![],
+            needs_human: false,
+            assignees: vec![],
         };
         crate::mcp::reset_issue_link_context_reads();
         let context = current_issue_link_context();
@@ -12222,6 +12372,57 @@ mod tests {
     }
 
     #[test]
+    fn published_schemas_carry_no_boilerplate() {
+        fn walk(value: &serde_json::Value, path: &str, found: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for key in ["$schema", "format"] {
+                        if map.contains_key(key) {
+                            found.push(format!("{path}: {key}"));
+                        }
+                    }
+                    if map.get("type").is_some_and(serde_json::Value::is_array) {
+                        found.push(format!("{path}: type array"));
+                    }
+                    if map.get("title").is_some_and(serde_json::Value::is_string) {
+                        found.push(format!("{path}: title"));
+                    }
+                    for (key, child) in map {
+                        walk(child, &format!("{path}.{key}"), found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, path, found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let (m, _guard) = mcp();
+        let schemas = m.list_tool_schemas();
+        let mut found = Vec::new();
+        for (name, schema) in &schemas {
+            walk(schema, name, &mut found);
+        }
+        assert!(found.is_empty(), "{found:#?}");
+        // A field named like a keyword is a field, and survives.
+        let (_, create) = schemas
+            .iter()
+            .find(|(name, _)| name == "create_issue")
+            .unwrap();
+        assert_eq!(create["properties"]["title"]["type"], "string");
+        // Neither a single title nor a batch is mandatory on its own.
+        assert!(
+            create
+                .get("required")
+                .and_then(serde_json::Value::as_array)
+                .is_none_or(Vec::is_empty),
+            "{create}"
+        );
+    }
+
+    #[test]
     fn plan_step_schemas_explain_numeric_ids_instead_of_positions() {
         let (m, _guard) = mcp();
         let schemas = m.list_tool_schemas();
@@ -12450,6 +12651,83 @@ mod tests {
             !out.contains("only step"),
             "receipt must omit the tree: {out}"
         );
+    }
+
+    // LIF-503: without step_id, add_child_title appends a top-level step
+    // after the existing roots instead of being silently dropped.
+    #[test]
+    fn update_plan_step_without_step_id_adds_a_top_level_step() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Plans", "PTL");
+        seed_issue(&m, "PTL", "Linked work");
+        m.create_plan(Parameters(CreatePlanInput {
+            project: Some("PTL".into()),
+            title: "Roots".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "existing root".into(),
+                steps: Some(vec![PlanStepInput {
+                    title: "nested".into(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+        }));
+
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PTL-PLAN-1".into(),
+            add_child_title: Some("new root".into()),
+            add_child_issue: Some("PTL-1".into()),
+            ..Default::default()
+        }));
+        assert!(out.contains("Added top-level step #"), "got: {out}");
+        assert!(
+            !out.contains("Updated plan"),
+            "no plan field changed: {out}"
+        );
+
+        let conn = m.db.read().unwrap();
+        let plan_id = queries::plans::resolve_plan_identifier(&conn, "PTL-PLAN-1").unwrap();
+        let plan = queries::plans::get_plan(&conn, plan_id).unwrap();
+        let roots: Vec<&str> = plan.steps.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(roots, ["existing root", "new root"]);
+        assert!(plan.steps[1].children.is_empty());
+        assert_eq!(plan.steps[1].issue_identifier.as_deref(), Some("PTL-1"));
+    }
+
+    #[test]
+    fn update_plan_step_refuses_step_fields_without_step_id() {
+        let (m, _guard) = mcp();
+        seed_project(&m, "Plans", "PSF");
+        m.create_plan(Parameters(CreatePlanInput {
+            project: Some("PSF".into()),
+            title: "Plan".into(),
+            anchor_issue: None,
+            steps: Some(vec![PlanStepInput {
+                title: "only".into(),
+                ..Default::default()
+            }]),
+        }));
+
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PSF-PLAN-1".into(),
+            done: Some(true),
+            ..Default::default()
+        }));
+        assert!(out.contains("done needs step_id"), "got: {out}");
+
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PSF-PLAN-1".into(),
+            add_child_issue: Some("PSF-1".into()),
+            ..Default::default()
+        }));
+        assert!(out.contains("need add_child_title"), "got: {out}");
+
+        let out = m.update_plan_step(Parameters(UpdatePlanStepInput {
+            plan: "PSF-PLAN-1".into(),
+            ..Default::default()
+        }));
+        assert!(out.contains("No changes specified"), "got: {out}");
     }
 
     #[test]
@@ -13283,6 +13561,7 @@ mod tests {
                     bytes.len() as i64,
                     None,
                 )?;
+                m.store.write_unlocked(bytes)?;
                 Ok(attachment.id)
             })
             .expect("seed media attachment");
@@ -13298,13 +13577,14 @@ mod tests {
                 .iter()
                 .all(|content| content.as_image().is_none())
         );
-        assert!(text_of(&result).contains("Binary, download at"));
+        assert!(text_of(&result).contains("Binary content is attached as an MCP resource."));
     }
 
     #[test]
-    fn get_attachment_summarizes_other_binary_types_without_the_bytes() {
+    fn get_attachment_returns_other_binary_types_as_stdio_resources() {
         let (m, _tmp, _guard, _identity) = mcp_with_attachments();
-        let pdf = base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7\nbody");
+        let bytes = b"%PDF-1.7\nbody";
+        let pdf = base64::engine::general_purpose::STANDARD.encode(bytes);
         let id = attachment_id_from(&m.upload_attachment(Parameters(UploadAttachmentInput {
             filename: "spec.pdf".into(),
             content_base64: pdf,
@@ -13328,10 +13608,62 @@ mod tests {
             )),
             "{text}"
         );
-        assert!(
-            text.ends_with(&format!("Binary, download at /api/attachments/{id}")),
-            "{text}"
-        );
+        assert!(!text.contains("download at"), "{text}");
+        let resource = result
+            .content
+            .iter()
+            .find_map(|content| content.as_resource().map(|resource| &resource.resource))
+            .expect("stdio should return the binary attachment as an embedded resource");
+        match resource {
+            rmcp::model::ResourceContents::BlobResourceContents {
+                uri,
+                mime_type,
+                blob,
+                ..
+            } => {
+                assert_eq!(uri, &format!("attachment://{id}"));
+                assert_eq!(mime_type.as_deref(), Some("application/pdf"));
+                assert_eq!(
+                    blob,
+                    &base64::engine::general_purpose::STANDARD.encode(bytes)
+                );
+            }
+            rmcp::model::ResourceContents::TextResourceContents { .. } => {
+                panic!("expected an embedded blob resource, got {resource:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn get_attachment_returns_svg_as_inert_stdio_resource() {
+        let (m, _tmp, _guard, _identity) = mcp_with_attachments();
+        let svg = base64::engine::general_purpose::STANDARD
+            .encode(br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#);
+        let id = attachment_id_from(&m.upload_attachment(Parameters(UploadAttachmentInput {
+            filename: "diagram.svg".into(),
+            content_base64: svg,
+            entity: None,
+            comment_id: None,
+        })));
+
+        let result = m.get_attachment(Parameters(GetAttachmentInput {
+            attachment_id: id,
+            offset: None,
+            limit: None,
+        }));
+        let resource = result
+            .content
+            .iter()
+            .find_map(|content| content.as_resource().map(|resource| &resource.resource))
+            .expect("stdio should return the SVG as an embedded resource");
+        match resource {
+            rmcp::model::ResourceContents::BlobResourceContents { mime_type, .. } => {
+                assert_eq!(mime_type.as_deref(), Some("application/octet-stream"));
+            }
+            rmcp::model::ResourceContents::TextResourceContents { .. } => {
+                panic!("expected an embedded blob resource, got {resource:?}")
+            }
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@
   import StatusIcon, { statusLabel } from "../lib/StatusIcon.svelte";
   import PriorityIcon from "../lib/PriorityIcon.svelte";
   import IssueCard from "../lib/issues/IssueCard.svelte";
+  import AssigneeMarker from "../lib/issues/AssigneeMarker.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import { toast } from "../lib/toast/toast.svelte";
   import { List, LayoutGrid } from "lucide-svelte";
@@ -193,11 +194,7 @@
                 {issue.identifier}
               </span>
               <span class="text-body-sm text-[var(--text)] truncate flex-1">{issue.title}</span>
-              {#if issue.assignee}
-                <span class="text-caption text-[var(--text-muted)] truncate max-w-[14ch]">
-                  {issue.assignee_display_name || issue.assignee}
-                </span>
-              {/if}
+              <AssigneeMarker {issue} />
             </button>
           {/each}
         </details>

@@ -123,11 +123,8 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
             .and_then(module_name)
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
-        let assignee = issue
-            .assignment
-            .assignee
-            .as_deref()
-            .map(|name| format!(" @{name}"))
+        let assigned = crate::db::queries::assignees::describe(issue.needs_human, &issue.assignees)
+            .map(|who| format!(" for {who}"))
             .unwrap_or_default();
         w!(
             out,
@@ -138,7 +135,7 @@ pub fn issue_list(issues: &[Issue], module_name: ModuleName<'_>) -> String {
             issue.title,
             bracketed_labels(&issue.labels),
             module,
-            assignee
+            assigned
         );
     }
     out
@@ -178,15 +175,38 @@ pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     if !issue.labels.is_empty() {
         w!(out, "  Labels:   {}", issue.labels.join(", "));
     }
-    if let Some(assignee) = &issue.assignment.assignee {
-        w!(out, "  Assignee: @{assignee}");
-    }
     for (name, value) in &issue.properties {
         w!(out, "  {name}: {value}");
     }
     if let Some(name) = issue.module_id.and_then(module_name) {
         w!(out, "  Module:   {name}");
     }
+    if let Some(who) = crate::db::queries::assignees::describe(issue.needs_human, &issue.assignees)
+    {
+        w!(out, "  For:      {who}");
+    }
+    relation_lines(&mut out, issue);
+    if !issue.description.is_empty() {
+        w!(out);
+        w!(out, "{}", issue.description);
+    }
+    out
+}
+
+/// What `issue link` and `issue unlink` print: the source issue's relations
+/// after the change.
+pub fn issue_relations(issue: &Issue) -> String {
+    let mut out = String::new();
+    w!(out, "Relations of {}: {}", issue.identifier, issue.title);
+    let before = out.len();
+    relation_lines(&mut out, issue);
+    if out.len() == before {
+        w!(out, "  None");
+    }
+    out
+}
+
+fn relation_lines(out: &mut String, issue: &Issue) {
     if !issue.blocks.is_empty() {
         w!(out, "  Blocks:   {}", issue.blocks.join(", "));
     }
@@ -202,11 +222,6 @@ pub fn issue_detail(issue: &Issue, module_name: ModuleName<'_>) -> String {
     if !issue.duplicated_by.is_empty() {
         w!(out, "  DupedBy:  {}", issue.duplicated_by.join(", "));
     }
-    if !issue.description.is_empty() {
-        w!(out);
-        w!(out, "{}", issue.description);
-    }
-    out
 }
 
 pub fn issue_created(issue: &Issue) -> String {
@@ -221,14 +236,6 @@ pub fn issue_updated(issue: &Issue) -> String {
     w!(out, "  Status:   {}", issue.status);
     w!(out, "  Priority: {}", issue.priority);
     out
-}
-
-pub fn issue_linked(source: &str, target: &str, relation_type: &str) -> String {
-    format!("Linked: {source} {relation_type} {target}\n")
-}
-
-pub fn issue_unlinked(source: &str, target: &str) -> String {
-    format!("Unlinked {source} and {target}\n")
 }
 
 // ── Project ──────────────────────────────────────────────────
@@ -610,7 +617,6 @@ mod tests {
             source: None,
             labels: Vec::new(),
             properties: Default::default(),
-            assignment: Default::default(),
             last_log_at: None,
             blocks: Vec::new(),
             blocked_by: Vec::new(),
@@ -618,6 +624,8 @@ mod tests {
             duplicates: Vec::new(),
             duplicated_by: Vec::new(),
             waits: Vec::new(),
+            needs_human: false,
+            assignees: Vec::new(),
         }
     }
 
@@ -733,6 +741,21 @@ mod tests {
             issue_detail(&one, &|_| None),
             "TST-1 - Fix the bug\n  Status:   active\n  Priority: urgent\n  \
              Blocks:   TST-2\n  DupedBy:  TST-3\n\nDetails\n"
+        );
+    }
+
+    #[test]
+    fn lists_relations_or_says_there_are_none() {
+        let mut one = issue("TST-1", Status::Active, Priority::Urgent);
+        assert_eq!(
+            issue_relations(&one),
+            "Relations of TST-1: Fix the bug\n  None\n"
+        );
+
+        one.relates_to = vec!["TST-4".into()];
+        assert_eq!(
+            issue_relations(&one),
+            "Relations of TST-1: Fix the bug\n  Relates:  TST-4\n"
         );
     }
 }

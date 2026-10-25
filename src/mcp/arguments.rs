@@ -30,23 +30,63 @@ pub(super) fn unquote_if_wrapped(value: &str) -> Option<&str> {
     value.strip_prefix(quote)?.strip_suffix(quote)
 }
 
+/// The published top-level parameter names of one tool, taken from its
+/// `input_schema.properties`. This is the contract the error rewrite relies
+/// on, made a type instead of a comment: aliases (LIF-472's `oldString`)
+/// never appear here because the schema advertises snake_case only, and
+/// [`ToolParameters::from_schema`] is the one producer, so the list cannot
+/// drift from what the deserializer accepts.
+pub(crate) struct ToolParameters(Vec<String>);
+
+impl ToolParameters {
+    pub(crate) fn from_schema(input_schema: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let names = input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .map(|properties| properties.keys().cloned().collect())
+            .unwrap_or_default();
+        Self(names)
+    }
+
+    fn names(&self) -> &[String] {
+        &self.0
+    }
+}
+
 /// Rewrite an rmcp parameter-deserialization error that is about an unknown
-/// field. Every other error passes through unchanged.
+/// or missing field. Every other error passes through unchanged. `provided`
+/// is the top-level argument names the call sent.
 pub(crate) fn explain_unknown_parameter(
     tool: &str,
-    top_level: Option<&[String]>,
+    params: Option<ToolParameters>,
+    provided: &[String],
     error: ErrorData,
 ) -> ErrorData {
-    match describe(tool, top_level, &error.message) {
+    match describe(tool, params.as_ref(), provided, &error.message) {
         Some(message) => ErrorData::invalid_params(message, error.data),
         None => error,
     }
 }
 
-fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<String> {
-    const PREFIX: &str = "unknown field `";
-    let start = message.find(PREFIX)? + PREFIX.len();
-    let rest = &message[start..];
+fn describe(
+    tool: &str,
+    params: Option<&ToolParameters>,
+    provided: &[String],
+    message: &str,
+) -> Option<String> {
+    const UNKNOWN: &str = "unknown field `";
+    const MISSING: &str = "missing field `";
+    // Serde names one field per message: either an unknown one (with the
+    // full expected list attached) or the first required one the payload
+    // lacks. The missing-field shape is how a required parameter arrives
+    // when a client dropped or renamed it, so it gets the same treatment:
+    // name the field, list the real ones.
+    let Some(at) = message.find(UNKNOWN) else {
+        let at = message.find(MISSING)?;
+        let name = message[at + MISSING.len()..].strip_suffix('`')?;
+        return Some(describe_missing(tool, params?.names(), provided, name));
+    };
+    let rest = &message[at + UNKNOWN.len()..];
     let (unknown, expected) = match rest.rfind("`, expected ") {
         Some(at) => (&rest[..at], &rest[at + "`, expected ".len()..]),
         None => (rest.strip_suffix("`, there are no fields")?, ""),
@@ -62,8 +102,8 @@ fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<S
 
     // A nested object (a plan step) has its own fields; say so rather than
     // claim they are the tool's parameters.
-    let nested = top_level.is_some_and(|top| {
-        let mut top: Vec<&str> = top.iter().map(String::as_str).collect();
+    let nested = params.is_some_and(|top| {
+        let mut top: Vec<&str> = top.names().iter().map(String::as_str).collect();
         let mut listed = valid.clone();
         top.sort_unstable();
         listed.sort_unstable();
@@ -86,6 +126,24 @@ fn describe(tool: &str, top_level: Option<&[String]>, message: &str) -> Option<S
         out.push_str(&format!(" Valid {noun}s: {}.", listed.join(", ")));
     }
     Some(out)
+}
+
+/// Serde gives no list and no location for a missing field. A name the tool
+/// does not take, or one the call already sent, was missing from a nested
+/// object (a plan step, a batch issue), so listing the tool's parameters
+/// would point the agent at the wrong place. A missing field is always a
+/// real, required name, so there is nothing to suggest.
+fn describe_missing(tool: &str, top_level: &[String], provided: &[String], name: &str) -> String {
+    let is_parameter = top_level.iter().any(|parameter| parameter == name)
+        && !provided.iter().any(|sent| sent == name);
+    if !is_parameter {
+        return format!("Missing field `{name}` in a nested {tool} object.");
+    }
+    let listed: Vec<String> = top_level.iter().map(|name| format!("`{name}`")).collect();
+    format!(
+        "Missing parameter `{name}` in {tool}. Valid parameters: {}.",
+        listed.join(", ")
+    )
 }
 
 /// Lowercase with separators removed, so `includeComments`,
@@ -173,11 +231,26 @@ mod tests {
     }
 
     #[test]
-    fn rewrites_only_unknown_field_errors() {
+    fn tool_parameters_come_from_schema_properties() {
+        let schema = serde_json::json!({
+            "properties": { "identifier": {}, "old_string": {} }
+        });
+        let params = ToolParameters::from_schema(schema.as_object().unwrap());
+        assert_eq!(params.names(), ["identifier", "old_string"]);
+        assert!(
+            ToolParameters::from_schema(&serde_json::Map::new())
+                .names()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn rewrites_unknown_and_missing_field_errors() {
         let top = vec!["identifier".to_string(), "include_comments".to_string()];
         let rewritten = describe(
             "get_issue",
-            Some(&top),
+            Some(&ToolParameters(top)),
+            &[],
             "failed to deserialize parameters: unknown field `comments`, expected `identifier` or `include_comments`",
         )
         .unwrap();
@@ -186,21 +259,66 @@ mod tests {
             "Unknown parameter `comments` in get_issue. Did you mean `include_comments`? \
              Valid parameters: `identifier`, `include_comments`."
         );
-        assert!(
-            describe(
-                "get_issue",
-                Some(&top),
-                "failed to deserialize parameters: missing field `identifier`"
-            )
-            .is_none()
+        // A dropped required parameter names the field but carries no list;
+        // the tool's schema properties stand in.
+        let missing = describe(
+            "list_resources",
+            Some(&ToolParameters(vec![
+                "resource_type".to_string(),
+                "project".to_string(),
+            ])),
+            &["project".to_string()],
+            "failed to deserialize parameters: missing field `resource_type`",
+        )
+        .unwrap();
+        assert_eq!(
+            missing,
+            "Missing parameter `resource_type` in list_resources. \
+             Valid parameters: `resource_type`, `project`."
         );
+    }
+
+    #[test]
+    fn a_field_missing_from_a_nested_object_is_not_called_a_parameter() {
+        let top = vec![
+            "project".to_string(),
+            "title".to_string(),
+            "steps".to_string(),
+        ];
+        let message = "failed to deserialize parameters: missing field `title`";
+        // The call sent `title`, so the missing one is a step's.
+        let sent = vec!["title".to_string(), "steps".to_string()];
+        assert_eq!(
+            describe(
+                "create_plan",
+                Some(&ToolParameters(top.clone())),
+                &sent,
+                message
+            )
+            .unwrap(),
+            "Missing field `title` in a nested create_plan object."
+        );
+        // A name the tool does not take at all is nested too.
+        assert_eq!(
+            describe(
+                "create_plan",
+                Some(&ToolParameters(top)),
+                &[],
+                "failed to deserialize parameters: missing field `text`"
+            )
+            .unwrap(),
+            "Missing field `text` in a nested create_plan object."
+        );
+        // Without the tool's schema there is nothing true to add.
+        assert!(describe("create_plan", None, &[], message).is_none());
     }
 
     #[test]
     fn hides_aliases_and_names_nested_objects() {
         let rewritten = describe(
             "create_plan",
-            Some(&["project".into(), "title".into(), "steps".into()]),
+            Some(&ToolParameters(vec!["project".into(), "title".into(), "steps".into()])),
+            &[],
             "unknown field `name`, expected one of `title`, `description`, `issue`, `done`, `steps`",
         )
         .unwrap();
@@ -211,6 +329,7 @@ mod tests {
         let aliased = describe(
             "edit_page",
             None,
+            &[],
             "unknown field `old`, expected one of `identifier`, `old_string`, `oldString`",
         )
         .unwrap();

@@ -25,6 +25,7 @@
   import ProjectIcon from "./ProjectIcon.svelte";
   import { Layers } from "lucide-svelte";
   import type { Module } from "./api";
+  import { portal } from "./actions/portal";
 
   let {
     identifier,
@@ -143,9 +144,9 @@
     };
   });
 </script>
-
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  use:portal
   bind:this={cardEl}
   role="tooltip"
   class="fixed z-[1000] w-[270px] rounded-lg border border-[var(--border)]

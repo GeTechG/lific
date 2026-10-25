@@ -668,21 +668,6 @@ export async function listMentionCandidates(projectId: number) {
   return request<MentionCandidate[]>(`/projects/${projectId}/mention-candidates`);
 }
 
-// ── Assignee candidates ─────────────────────────────────────
-//
-// The accounts an issue of this project may be assigned to: members,
-// administrators, and the agents they own.
-
-export interface AssigneeCandidate {
-  username: string;
-  display_name: string;
-  is_bot: boolean;
-}
-
-export async function listAssignees(projectId: number) {
-  return request<AssigneeCandidate[]>(`/projects/${projectId}/assignees`);
-}
-
 // ── Projects ────────────────────────────────────────────────
 
 export interface Project {
@@ -758,6 +743,45 @@ export async function deleteProject(id: number) {
   return request<{ deleted: boolean }>(`/projects/${id}`, {
     method: "DELETE",
   });
+}
+
+/** A project moved out of the instance into one compressed file in the data
+ *  directory. Unarchiving brings it back. */
+export interface ArchivedProject {
+  id: number;
+  identifier: string;
+  name: string;
+  description: string;
+  emoji: string | null;
+  file_name: string;
+  size_bytes: number;
+  issue_count: number;
+  page_count: number;
+  archived_at: string;
+  archived_by: number | null;
+  archived_by_name: string | null;
+  /** Published when archived. Unarchiving always brings it back private. */
+  was_public: boolean;
+  /** False when the file is gone from disk; such an entry cannot be unarchived. */
+  file_present: boolean;
+}
+
+export interface UnarchivedProject {
+  project_id: number;
+  identifier: string;
+  was_public: boolean;
+}
+
+export async function archiveProject(id: number) {
+  return request<ArchivedProject>(`/projects/${id}/archive`, { method: "POST" });
+}
+
+export async function listArchivedProjects() {
+  return request<ArchivedProject[]>("/archived-projects");
+}
+
+export async function unarchiveProject(id: number) {
+  return request<UnarchivedProject>(`/archived-projects/${id}/unarchive`, { method: "POST" });
 }
 
 /** A user's sidebar project group. `project_ids` carries only projects the
@@ -865,11 +889,6 @@ export interface Issue {
   created_at: string;
   updated_at: string;
   labels: string[];
-  /** Username of the account working the issue; null when unassigned. */
-  assignee?: string | null;
-  assignee_display_name?: string;
-  /** True when the assignee is an agent. */
-  assignee_is_bot?: boolean;
   /** Free-form text properties by name; `{}` when the issue has none. */
   properties?: Record<string, string>;
   /** When the newest run-log line was written (UTC, `YYYY-MM-DD HH:MM:SS`).
@@ -882,6 +901,43 @@ export interface Issue {
   duplicated_by?: string[];
   /** LIF-484: user and date blockers. Absent when the issue has none. */
   waits?: IssueWait[];
+  /** LIF-147: true when a person must do this issue: anyone (no
+   *  `assignees`) or the named people in `assignees`. False means
+   *  unassigned, so any agent may work it. */
+  needs_human?: boolean;
+  /** LIF-147: the named people. Absent for unassigned issues and for
+   *  issues marked for any person. Always human accounts. */
+  assignees?: IssueAssignee[];
+  /** LIF-436: instance-wide write sequence; send back as `expected_seq`. */
+  seq?: number;
+}
+
+// ── Assignment (LIF-147) ───────────────────────────────────
+//
+// Three states: unassigned (`needs_human` false), any person (`needs_human`
+// true, no `assignees`), or named people. A write sends `assignees` as a
+// whole replacement: `[]`, `["human"]`, or usernames.
+
+export interface IssueAssignee {
+  user_id: number;
+  username: string;
+  display_name?: string;
+}
+
+/** `GET /api/issues/attention` (LIF-506): open issues waiting on the caller
+ *  across every project they can see, newest activity first, at most 50 per
+ *  group. An issue can be in `waiting` and in one of the other two. */
+export interface Attention {
+  /** Issues that name the caller. */
+  assigned: Issue[];
+  /** Issues marked for any person, naming no one. */
+  human: Issue[];
+  /** Issues with a user wait on the caller. */
+  waiting: Issue[];
+}
+
+export async function getAttention() {
+  return request<Attention>("/issues/attention");
 }
 
 // ── Waits: user and date blockers (LIF-484) ────────────────
@@ -945,6 +1001,9 @@ export interface IssueFilters {
   module_id?: number;
   label?: string;
   workable?: boolean;
+  /** LIF-147: `none`, `human` (any issue a person must do), `me`, or a
+   *  username. */
+  assignee?: string;
   order_by?: string;
   order?: "asc" | "desc";
   limit?: number;
@@ -987,6 +1046,8 @@ export interface CreateIssueInput {
   priority?: string;
   module_id?: number;
   labels?: string[];
+  /** LIF-147: `["human"]` for any person, or usernames. Omit for agents. */
+  assignees?: string[];
 }
 
 export async function createIssue(input: CreateIssueInput) {
@@ -1033,11 +1094,14 @@ export interface UpdateIssueInput {
   module_id?: number;
   sort_order?: number;
   labels?: string[];
-  /** A username assigns that account; null clears the assignee. */
-  assignee?: string | null;
   /** Property delta, applied server-side: other properties are kept. */
   set_properties?: Record<string, string>;
   unset_properties?: string[];
+  /** LIF-147: replaces the assignment. `[]` = any agent, `["human"]` = any
+   *  person, usernames = those people. */
+  assignees?: string[];
+  /** LIF-441: refuse the write (409) unless the issue still has this seq. */
+  expected_seq?: number;
 }
 
 export async function updateIssue(id: number, input: UpdateIssueInput) {
@@ -1260,7 +1324,9 @@ export interface Activity {
   project_id: number | null;
   issue_id: number | null;
   page_id: number | null;
-  /** create | update | delete | attach | detach | link | unlink | wait | unwait */
+  /** create | update | delete | attach | detach | link | unlink | wait |
+   *  unwait | assign | unassign. Assignment entries have `field`
+   *  "assignee" and a value of "@username" or "human". */
   action: string;
   field: string | null;
   old_value: string | null;
@@ -1868,6 +1934,8 @@ export interface Page {
   /** LIF-105: project-scoped labels attached to this page. Always [] for
    *  workspace pages (project_id === null). */
   labels: string[];
+  /** LIF-436: instance-wide write sequence; send back as `expected_seq`. */
+  seq?: number;
 }
 
 export interface Folder {
@@ -1935,6 +2003,8 @@ export interface UpdatePageInput {
   pinned?: boolean;
   /** LIF-105: replace the full label set. Pass [] to clear. Omitted = no change. */
   labels?: string[];
+  /** LIF-441: refuse the write (409) unless the page still has this seq. */
+  expected_seq?: number;
 }
 
 export async function updatePage(id: number, input: UpdatePageInput) {
@@ -1985,9 +2055,14 @@ export interface SearchResult {
   partial_match?: boolean;
 }
 
-export async function search(query: string, projectId?: number) {
+export async function search(
+  query: string,
+  projectId?: number,
+  opts: { resultType?: "issue" | "page" | "comment" | "attachment" } = {},
+) {
   const params = new URLSearchParams({ query });
   if (projectId) params.set("project_id", String(projectId));
+  if (opts.resultType) params.set("result_type", opts.resultType);
   return request<SearchResult[]>(`/search?${params}`);
 }
 
@@ -2410,6 +2485,62 @@ export async function deletePlanStep(planId: number, stepId: number) {
 
 export async function listAllPages() {
   return request<Page[]>("/pages");
+}
+
+/** `GET /api/home/overview` (LIF-507): Home's aggregates across every
+ *  project the caller can see. Days are the caller's local days. */
+export type AgeBucketKey = "week" | "month" | "quarter" | "half" | "older";
+
+export interface AgeBucket {
+  key: AgeBucketKey;
+  total: number;
+  urgent: number;
+  high: number;
+  medium: number;
+  low: number;
+  none: number;
+  /** Unassigned, unblocked, and not already active. */
+  agent_ready: number;
+  /** Assigned to named people or marked for any person. */
+  needs_human: number;
+}
+
+export interface DayCount {
+  /** Local YYYY-MM-DD. */
+  date: string;
+  count: number;
+}
+
+export interface ProjectPulse {
+  project_id: number;
+  open: number;
+  /** UTC timestamp of the project's latest audit entry. */
+  last_activity: string | null;
+}
+
+export interface SinceSummary {
+  agents_opened: number;
+  agents_closed: number;
+  people_opened: number;
+  people_closed: number;
+}
+
+export interface HomeOverview {
+  open_total: number;
+  age_buckets: AgeBucket[];
+  /** Open count at the end of each of the last 91 days, oldest first. */
+  open_trend: DayCount[];
+  projects: ProjectPulse[];
+  /** Null unless the request named `since`. */
+  since: SinceSummary | null;
+  /** Issues the caller or their agents moved to done, last 84 days. */
+  my_done: DayCount[];
+}
+
+export async function getHomeOverview(since: string | null) {
+  const params = new URLSearchParams({ tz: String(-new Date().getTimezoneOffset()) });
+  if (since) params.set("since", since);
+  return request<HomeOverview>(`/home/overview?${params}`);
 }
 
 // ── Insights (LIF-240) ───────────────────────────────────────

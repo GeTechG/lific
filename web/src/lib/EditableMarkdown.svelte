@@ -30,7 +30,6 @@
   // protect). Non-empty surfaces never start edit from a content click.
 
   import Markdown from "./Markdown.svelte";
-  import { toggleTask } from "./markdownFormat";
   import ModeToggle from "./ModeToggle.svelte";
   import StatusIcon from "./StatusIcon.svelte";
   import {
@@ -93,6 +92,9 @@
     // comment box. Callers that own a toggle pass false; the default stays
     // true so a future bare call site is not left with no way to switch.
     floatingToggle = true,
+    // LIF-502: save a body rewritten by ticking a task checkbox in the read
+    // pane (see Markdown's `onTaskToggle`). Only wired while `editable`.
+    onTaskToggle = undefined,
   }: {
     value: string;
     editable?: boolean;
@@ -106,6 +108,7 @@
     saving?: boolean;
     attachTo?: { entity_type: AttachmentEntity; entity_id: number } | null;
     floatingToggle?: boolean;
+    onTaskToggle?: ((next: string) => Promise<boolean | void> | boolean | void) | undefined;
   } = $props();
 
   // Draft only matters while editing. enterEdit() copies the current
@@ -716,10 +719,7 @@
     -->
     <div bind:this={renderedEl} class="em-rendered {proseClass}">
       {#if hasContent}
-        <Markdown
-          content={value}
-          onTaskToggle={editable ? (i, checked) => onSave(toggleTask(value, i, checked)) : undefined}
-        />
+        <Markdown content={value} onTaskToggle={editable ? onTaskToggle : undefined} />
       {:else if editable}
         <button
           type="button"

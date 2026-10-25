@@ -941,8 +941,6 @@ fn render_issue_markdown(
         priority: crate::db::models::Priority,
         module: Option<String>,
         labels: &'a [String],
-        #[serde(skip_serializing_if = "Option::is_none")]
-        assignee: &'a Option<String>,
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         properties: &'a BTreeMap<String, String>,
         blocks: &'a [String],
@@ -952,6 +950,9 @@ fn render_issue_markdown(
         duplicates: &'a [String],
         #[serde(skip_serializing_if = "<[String]>::is_empty")]
         duplicated_by: &'a [String],
+        /// LIF-147: `[human]` or usernames; absent when agents may take it.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        assigned: Vec<String>,
         start_date: &'a Option<String>,
         target_date: &'a Option<String>,
         created_at: &'a str,
@@ -969,13 +970,17 @@ fn render_issue_markdown(
             priority: issue.priority,
             module,
             labels: &issue.labels,
-            assignee: &issue.assignment.assignee,
             properties: &issue.properties,
             blocks: &issue.blocks,
             blocked_by: &issue.blocked_by,
             relates_to: &issue.relates_to,
             duplicates: &issue.duplicates,
             duplicated_by: &issue.duplicated_by,
+            assigned: match (issue.needs_human, issue.assignees.is_empty()) {
+                (false, _) => Vec::new(),
+                (true, true) => vec![queries::assignees::HUMAN.to_string()],
+                (true, false) => issue.assignees.iter().map(|a| a.username.clone()).collect(),
+            },
             start_date: &issue.start_date,
             target_date: &issue.target_date,
             created_at: &issue.created_at,
@@ -1191,6 +1196,43 @@ mod tests {
         assert!(export_page(&conn, &doomed_page.identifier).is_err());
     }
 
+    /// LIF-147: who must do an issue rides in the frontmatter, and an issue
+    /// agents may take carries no key at all.
+    #[test]
+    fn issue_export_names_the_assignment() {
+        let db = open_memory().unwrap();
+        let conn = db.write().unwrap();
+        let project = queries::create_project(
+            &conn,
+            &CreateProject {
+                name: "Export Test".into(),
+                identifier: "EXA".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (title, who) in [("Free", None), ("Anyone", Some(vec!["human".to_string()]))] {
+            queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: project.id,
+                    title: title.into(),
+                    assignees: who,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let free = export_issue(&conn, "EXA-1", None).unwrap().files.remove(0);
+        assert!(!free.content.contains("assigned:"), "{}", free.content);
+        let anyone = export_issue(&conn, "EXA-2", None).unwrap().files.remove(0);
+        assert!(
+            anyone.content.contains("assigned:\n- human\n"),
+            "{}",
+            anyone.content
+        );
+    }
+
     #[test]
     fn project_export_writes_issue_and_nested_page_paths() {
         let db = open_memory().unwrap();
@@ -1227,15 +1269,6 @@ mod tests {
                 display_name: Some("Tester".into()),
                 is_admin: true,
                 is_bot: false,
-            },
-        )
-        .unwrap();
-        queries::update_issue(
-            &conn,
-            issue.id,
-            &crate::db::models::UpdateIssue {
-                assignee: Some(Some("tester".into())),
-                ..Default::default()
             },
         )
         .unwrap();
@@ -1301,11 +1334,6 @@ mod tests {
             issue_file
                 .content
                 .contains("properties:\n  footprint: src/a.js, test/\n"),
-            "{}",
-            issue_file.content
-        );
-        assert!(
-            issue_file.content.contains("assignee: tester\n"),
             "{}",
             issue_file.content
         );

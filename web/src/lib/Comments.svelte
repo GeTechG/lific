@@ -43,7 +43,6 @@
     type AnchorPageAttempt,
     type CommentKeyboardContext,
   } from "./commentState";
-  import { toggleTask } from "./markdownFormat";
   import { ensureMeAdmin, projectRole } from "./projectRole.svelte";
 
   let {
@@ -617,7 +616,7 @@
                     class="text-sm"
                     {mermaidBudget}
                     onTaskToggle={canToggleCommentTasks(comment, currentUser, projectRole.meIsAdmin === true, onUpdate !== undefined)
-                      ? (i, checked) => void onUpdate?.(comment.id, toggleTask(comment.content, i, checked))
+                      ? async (next) => (await onUpdate?.(comment.id, next)) != null
                       : undefined}
                   />
                 {/key}
@@ -700,7 +699,7 @@
         busy={attach.uploads.busy}
         onFiles={(files, source) => attach.enqueue(files, source)}
       />
-      <span class="cmt__hint">Markdown \u00b7 drag, paste or attach files</span>
+      <span class="cmt__hint">Markdown · drag, paste or attach files</span>
     </div>
     <div class="cmt__actions">
       <span class="cmt__kbd" aria-hidden="true">

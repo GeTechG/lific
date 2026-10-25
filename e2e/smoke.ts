@@ -32,8 +32,8 @@ import { join, resolve } from "node:path";
 import { checkDiscordFeedback } from "./discord-feedback";
 import { checkPaletteSearch } from "./palette-search";
 import { checkDuplicateRelations } from "./duplicate-relations";
+import { checkRelationEditing } from "./relation-editing";
 import { checkIssueWaits } from "./issue-waits";
-import { checkIssueAssignee } from "./issue-assignee";
 import { checkIssueRunLog } from "./issue-run-log";
 import { Database } from "bun:sqlite";
 
@@ -232,8 +232,8 @@ async function main(): Promise<number> {
     // assertions above.
     await checkPaletteSearch(context, base);
     await checkDuplicateRelations(context, base);
+    await checkRelationEditing(context, base);
     await checkIssueWaits(context, base, "smoke-operator");
-    await checkIssueAssignee(context, base, "smoke-operator");
     await checkIssueRunLog(context, base);
 
     // ---- deep-link back synthesis (LIF-434) ----------------------------

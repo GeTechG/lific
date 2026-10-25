@@ -8,7 +8,7 @@
   // popover state are read and mutated directly on it. Data-derived inputs
   // (option lists, tallies, count label) and the few component-owned bits
   // (navigate, searchInputEl, inline-create trigger) come in as props.
-  import type { Label, Module } from "../api";
+  import type { IssueAssignee, Label, Module } from "../api";
   import {
     Plus, Search, ChevronDown, Signal,
     List as ListIcon, LayoutGrid, SlidersHorizontal, HelpCircle,
@@ -72,8 +72,8 @@
     /** Label + module lists feed the filter modal's Label / Module sections. */
     labels: Label[];
     modules: Module[];
-    /** Usernames assigned to at least one loaded issue. */
-    assignees?: string[];
+    /** LIF-147: people named on this project's issues, for the filter. */
+    assignees?: IssueAssignee[];
     priorityCssColor: (p: string) => string;
     /** The search <input> DOM ref the parent focuses on `/` and openSearch. */
     searchInputEl: HTMLInputElement | null;

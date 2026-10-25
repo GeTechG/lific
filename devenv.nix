@@ -257,6 +257,7 @@ in
           exec = ''
             bun run smoke
             bun run archives
+            bun run status-move
             bun run public
           '';
           after = [

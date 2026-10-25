@@ -112,14 +112,13 @@ pub(super) fn log_lines(lines: &[String]) -> std::io::Result<Vec<String>> {
     std::io::stdin().lines().collect()
 }
 
-/// `--assignee` / `--unassign` as the tristate `UpdateIssue::assignee`
-/// carries: neither flag leaves the assignee alone.
-pub(super) fn assignee_edit(assignee: &Option<String>, unassign: bool) -> Option<Option<String>> {
+/// LIF-147: `--assign a,b` or `--unassign` as the assignment the API takes.
+/// `None` leaves it unchanged; `Some([])` clears it.
+pub(super) fn assignment_arg(assign: Option<&str>, unassign: bool) -> Option<Vec<String>> {
     if unassign {
-        Some(None)
-    } else {
-        assignee.clone().map(Some)
+        return Some(Vec::new());
     }
+    owned_labels(assign)
 }
 
 /// Whether `--url` was typed for `lific mcp`, rather than arriving from
@@ -831,13 +830,14 @@ pub enum IssueAction {
         #[arg(short, long)]
         label: Option<String>,
 
-        /// Filter by assignee username
-        #[arg(long, value_name = "USERNAME")]
-        assignee: Option<String>,
-
         /// Only show workable issues (open, not in review, no unresolved blockers)
         #[arg(short, long)]
         workable: bool,
+
+        /// Filter by assignment: none (free for agents), human (needs a
+        /// person), me, or a username
+        #[arg(long)]
+        assignee: Option<String>,
 
         /// Max results (default 50)
         #[arg(long)]
@@ -884,9 +884,10 @@ pub enum IssueAction {
         #[arg(long = "set", value_name = "NAME=VALUE")]
         set: Vec<String>,
 
-        /// Assign to this user (a project member or an administrator, or a bot of one)
-        #[arg(long, value_name = "USERNAME")]
-        assignee: Option<String>,
+        /// Who must do it (comma-separated): "human" for any person, or
+        /// usernames ("me" is you). Omit to leave it free for agents
+        #[arg(long, value_name = "WHO")]
+        assign: Option<String>,
     },
 
     /// Update an existing issue
@@ -947,39 +948,41 @@ pub enum IssueAction {
         #[arg(long = "unset", value_name = "NAME")]
         unset: Vec<String>,
 
-        /// Assign to this user (a project member or an administrator, or a bot of one)
-        #[arg(long, value_name = "USERNAME", conflicts_with = "unassign")]
-        assignee: Option<String>,
+        /// Replace who must do it (comma-separated): "human" for any person,
+        /// or usernames ("me" is you)
+        #[arg(long, value_name = "WHO", conflicts_with = "unassign")]
+        assign: Option<String>,
 
-        /// Clear the assignee
+        /// Clear the assignment so any agent may take the issue
         #[arg(long)]
         unassign: bool,
     },
 
-    /// Relate two issues. With the default type, SOURCE blocks TARGET
+    /// Link two issues with a relation (default: LIF-1 blocks LIF-2)
     Link {
-        /// Source issue identifier: the blocker, or the duplicate (e.g. LIF-1)
+        /// Source issue identifier (e.g. LIF-1)
         source: String,
 
-        /// Target issue identifier: the blocked issue, or the original (e.g. APP-7)
+        /// Target issue identifier (e.g. LIF-2)
         target: String,
 
-        /// Relation from SOURCE to TARGET
+        /// Relation from source to target
         #[arg(
+            short = 'r',
             long = "type",
             value_name = "TYPE",
-            default_value = "blocks",
-            value_parser = ["blocks", "relates_to", "duplicate"]
+            value_enum,
+            default_value = "blocks"
         )]
-        relation_type: String,
+        relation: RelationType,
     },
 
     /// Remove every relation between two issues, in either direction
     Unlink {
-        /// One issue identifier (e.g. LIF-1)
+        /// First issue identifier (e.g. LIF-1)
         source: String,
 
-        /// The other issue identifier (e.g. APP-7)
+        /// Second issue identifier (e.g. LIF-2)
         target: String,
     },
 
@@ -1020,6 +1023,28 @@ pub enum IssueLogAction {
         #[arg(long)]
         limit: Option<i64>,
     },
+}
+
+/// Relation kinds accepted by `issue link`, named as the API stores them.
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub enum RelationType {
+    /// Source blocks target
+    Blocks,
+    /// Source and target are related
+    #[value(name = "relates_to")]
+    RelatesTo,
+    /// Source duplicates target
+    Duplicate,
+}
+
+impl RelationType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocks => "blocks",
+            Self::RelatesTo => "relates_to",
+            Self::Duplicate => "duplicate",
+        }
+    }
 }
 
 // ── Project ──────────────────────────────────────────────────
@@ -2741,11 +2766,13 @@ mod tests {
                         module,
                         label,
                         workable,
+                        assignee,
                         limit,
                         ..
                     },
             } => {
                 assert_eq!(project, "LIF");
+                assert!(assignee.is_none());
                 assert!(status.is_none());
                 assert!(priority.is_none());
                 assert!(module.is_none());
@@ -2843,40 +2870,6 @@ mod tests {
             }
             _ => panic!("expected Issue Create"),
         }
-    }
-
-    #[test]
-    fn parse_issue_assignee_flags() {
-        let update = |args: &[&str]| {
-            let mut argv = vec!["lific", "issue", "update", "LIF-42"];
-            argv.extend_from_slice(args);
-            Cli::try_parse_from(argv).map(|cli| match cli.command {
-                Command::Issue {
-                    action:
-                        IssueAction::Update {
-                            assignee, unassign, ..
-                        },
-                } => assignee_edit(&assignee, unassign),
-                _ => panic!("expected Issue Update"),
-            })
-        };
-        assert_eq!(update(&[]).unwrap(), None);
-        assert_eq!(
-            update(&["--assignee", "kit"]).unwrap(),
-            Some(Some("kit".into()))
-        );
-        assert_eq!(update(&["--unassign"]).unwrap(), Some(None));
-        assert!(update(&["--assignee", "kit", "--unassign"]).is_err());
-
-        let cli = Cli::try_parse_from(["lific", "issue", "list", "-p", "LIF", "--assignee", "kit"])
-            .unwrap();
-        let Command::Issue {
-            action: IssueAction::List { assignee, .. },
-        } = cli.command
-        else {
-            panic!("expected Issue List");
-        };
-        assert_eq!(assignee.as_deref(), Some("kit"));
     }
 
     #[test]
@@ -3048,12 +3041,12 @@ mod tests {
                     IssueAction::Link {
                         source,
                         target,
-                        relation_type,
+                        relation,
                     },
             } => {
                 assert_eq!(source, "HPS-1");
                 assert_eq!(target, "SPR-1");
-                assert_eq!(relation_type, "blocks");
+                assert_eq!(relation, RelationType::Blocks);
             }
             _ => panic!("expected Issue Link"),
         }

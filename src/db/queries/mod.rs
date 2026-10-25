@@ -1,9 +1,10 @@
 pub(crate) mod activity;
-pub(crate) mod assignee;
+pub(crate) mod assignees;
 pub(crate) mod attachments;
 pub(crate) mod briefing;
 pub(crate) mod changes;
 pub(crate) mod comments;
+pub(crate) mod home;
 pub(crate) mod insights;
 pub(crate) mod issue_log;
 mod issues;

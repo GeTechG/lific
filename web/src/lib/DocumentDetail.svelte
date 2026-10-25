@@ -70,6 +70,9 @@
     bodyEmptyReadText = "Nothing here yet",
     bodyProseMinHeight = "120px",
     onSaveBody,
+    // LIF-502: save a body rewritten by ticking one of its task checkboxes
+    // in the read view. Optional; without it the checkboxes stay disabled.
+    onToggleBodyTask = undefined,
     autofocusWhenEmpty = false,
     // Save indicator (route-owned state)
     saving = false,
@@ -155,6 +158,7 @@
     bodyEmptyReadText?: string;
     bodyProseMinHeight?: string;
     onSaveBody: (next: string) => Promise<void> | void;
+    onToggleBodyTask?: ((next: string) => Promise<boolean>) | undefined;
     autofocusWhenEmpty?: boolean;
     saving?: boolean;
     lastSaved?: string | null;
@@ -484,6 +488,7 @@
         await onSaveBody(next);
         attachmentRefresh += 1;
       }}
+      onTaskToggle={onToggleBodyTask}
       attachTo={attachEntity}
     />
   {/if}

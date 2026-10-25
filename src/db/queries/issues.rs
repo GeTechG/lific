@@ -38,7 +38,6 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                 seq: row.get::<_, Option<i64>>(15)?.unwrap_or(0),
                 labels: Vec::new(),
                 properties: Default::default(),
-                assignment: Default::default(),
                 last_log_at: None,
                 blocks: Vec::new(),
                 blocked_by: Vec::new(),
@@ -46,6 +45,8 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
                 duplicates: Vec::new(),
                 duplicated_by: Vec::new(),
                 waits: Vec::new(),
+                needs_human: false,
+                assignees: Vec::new(),
             })
         })
         .map_err(|e| match e {
@@ -145,9 +146,9 @@ pub fn get_issue(conn: &Connection, id: i64) -> Result<Issue, LificError> {
 
     issue.waits = super::waits::list_waits(conn, id)?;
     issue.properties = super::properties::list_properties(conn, id)?;
-    issue.assignment = super::assignee::assignments_by_issue(conn, &[id])?
-        .remove(&id)
-        .unwrap_or_default();
+    let assignment = super::assignees::assignment(conn, id)?;
+    issue.needs_human = assignment.needs_human;
+    issue.assignees = assignment.assignees;
     issue.last_log_at = super::issue_log::last_log_at_by_issue(conn, &[id])?.remove(&id);
 
     Ok(issue)
@@ -355,13 +356,6 @@ pub fn list_issues_page(
         conditions.push(format!("l.name = ?{}", param_values.len() + 1));
         param_values.push(Box::new(label.clone()));
     }
-    if let Some(ref assignee) = q.assignee {
-        conditions.push(format!(
-            "i.assignee_id = (SELECT id FROM users WHERE username = ?{} COLLATE NOCASE)",
-            param_values.len() + 1
-        ));
-        param_values.push(Box::new(assignee.trim_start_matches('@').to_string()));
-    }
     // Date-window filters. `since` is inclusive, `until` exclusive. Stored
     // timestamps use SQLite's "YYYY-MM-DD HH:MM:SS" form; normalize an ISO
     // 'T' separator so "2026-06-10T12:00:00" compares correctly against it.
@@ -374,6 +368,20 @@ pub fn list_issues_page(
         if let Some(v) = value {
             conditions.push(format!("{col} {op} ?{}", param_values.len() + 1));
             param_values.push(Box::new(v.replace('T', " ")));
+        }
+    }
+    // LIF-147: assignment filter.
+    if let Some(ref value) = q.assignee {
+        let (condition, user) = super::assignees::filter_condition(
+            conn,
+            value,
+            q.caller_user_id,
+            "i",
+            param_values.len() + 1,
+        )?;
+        conditions.push(condition);
+        if let Some(user) = user {
+            param_values.push(Box::new(user));
         }
     }
     // LIF-484: a user wait, or a date wait before its earliest day, blocks
@@ -492,7 +500,6 @@ pub fn list_issues_page(
             source: None,
             labels: Vec::new(),
             properties: Default::default(),
-            assignment: Default::default(),
             last_log_at: None,
             blocks: Vec::new(),
             blocked_by: Vec::new(),
@@ -500,6 +507,8 @@ pub fn list_issues_page(
             duplicates: Vec::new(),
             duplicated_by: Vec::new(),
             waits: Vec::new(),
+            needs_human: false,
+            assignees: Vec::new(),
         })
     })?;
 
@@ -579,12 +588,15 @@ pub fn list_issues_page(
         // them, in one grouped query.
         let mut waits = super::waits::waits_by_issue(conn, &ids)?;
         let mut properties = super::properties::properties_by_issue(conn, &ids)?;
-        let mut assignments = super::assignee::assignments_by_issue(conn, &ids)?;
+        let mut assignments = super::assignees::assignments_by_issue(conn, &ids)?;
         let mut last_log_at = super::issue_log::last_log_at_by_issue(conn, &ids)?;
         for issue in &mut issues {
             issue.waits = waits.remove(&issue.id).unwrap_or_default();
             issue.properties = properties.remove(&issue.id).unwrap_or_default();
-            issue.assignment = assignments.remove(&issue.id).unwrap_or_default();
+            if let Some(assignment) = assignments.remove(&issue.id) {
+                issue.needs_human = assignment.needs_human;
+                issue.assignees = assignment.assignees;
+            }
             issue.last_log_at = last_log_at.remove(&issue.id);
         }
     }
@@ -669,11 +681,6 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
         validate_module_project(conn, input.project_id, module_id)?;
     }
     super::properties::validate_delta(&input.set_properties, &[])?;
-    let assignee_id = input
-        .assignee
-        .as_deref()
-        .map(|username| super::assignee::resolve(conn, input.project_id, username))
-        .transpose()?;
 
     // Deliberately counts tombstones too (LIF-438): sequence numbers are the
     // user-visible identifier, and reusing one that a soft-deleted issue still
@@ -717,14 +724,6 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
             )?;
         }
         super::properties::apply_delta(conn, id, &input.set_properties, &[])?;
-        // An UPDATE rather than a column of the INSERT, so the assignment is
-        // audited like any later one.
-        if let Some(assignee_id) = assignee_id {
-            conn.execute(
-                "UPDATE issues SET assignee_id = ?1 WHERE id = ?2",
-                params![assignee_id, id],
-            )?;
-        }
         // LIF-409: attachment links are derived from the description, so they
         // are reconciled here rather than by each transport afterwards. Inside
         // this savepoint a failed link rolls the whole issue back, which is
@@ -737,6 +736,15 @@ pub fn create_issue(conn: &Connection, input: &CreateIssue) -> Result<Issue, Lif
             input.attachments,
             Some(input.project_id),
         )?;
+        if let Some(ref names) = input.assignees {
+            super::assignees::set_assignment(
+                conn,
+                id,
+                input.project_id,
+                names,
+                super::assignees::actor(conn),
+            )?;
+        }
         get_issue(conn, id)
     })
 }
@@ -748,17 +756,6 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
         validate_module_project(conn, issue.project_id, module_id)?;
     }
     super::properties::validate_delta(&input.set_properties, &input.unset_properties)?;
-    // Outer Some: the client sent the key. Inner None unassigns.
-    let assignee_id = input
-        .assignee
-        .as_ref()
-        .map(|assignee| {
-            assignee
-                .as_deref()
-                .map(|username| super::assignee::resolve(conn, issue.project_id, username))
-                .transpose()
-        })
-        .transpose()?;
 
     super::savepoint::<_, Issue>(conn, "update_issue", || {
         // LIF-441: the precondition is checked inside the savepoint, on the
@@ -842,13 +839,16 @@ pub fn update_issue(conn: &Connection, id: i64, input: &UpdateIssue) -> Result<I
                 )?;
             }
         }
-        if let Some(assignee_id) = assignee_id {
-            conn.execute(
-                "UPDATE issues SET assignee_id = ?1 WHERE id = ?2 AND assignee_id IS NOT ?1",
-                params![assignee_id, id],
+        super::properties::apply_delta(conn, id, &input.set_properties, &input.unset_properties)?;
+        if let Some(ref names) = input.assignees {
+            super::assignees::set_assignment(
+                conn,
+                id,
+                issue.project_id,
+                names,
+                super::assignees::actor(conn),
             )?;
         }
-        super::properties::apply_delta(conn, id, &input.set_properties, &input.unset_properties)?;
         // LIF-409: re-scan the stored description (edited or not) and
         // reconcile links, in the same savepoint as the edit itself. Read back
         // from the row rather than from `input`, so an update that leaves the

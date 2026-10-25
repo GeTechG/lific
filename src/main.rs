@@ -1,5 +1,6 @@
 mod actor;
 mod api;
+mod archived_projects;
 mod auth;
 mod authz;
 #[cfg(test)]
@@ -532,7 +533,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             .public_url
             .as_deref()
             .and_then(links::IssueLinkContext::parse);
-        return cli::exec::run(&pool, &cli.command, json, links.as_ref());
+        let result = cli::exec::run(&pool, &cli.command, json, links.as_ref());
+        // LIF-509: catch up on a due backup after the command's own output.
+        // Not from `git-hook`, which runs inside someone's `git commit` and
+        // should never stall it on an archive.
+        if !matches!(cli.command, Command::GitHook { .. }) {
+            backup::run_if_due(&cfg, &pool);
+        }
+        return result;
     }
 
     match cli.command {
@@ -594,6 +602,8 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     "db_size_bytes": m.db_size_bytes,
                     "attachment_count": m.attachment_count,
                     "attachment_bytes": m.attachment_bytes,
+                    "archived_project_count": m.archived_project_count,
+                    "archived_project_bytes": m.archived_project_bytes,
                 });
                 println!("{}", serde_json::to_string_pretty(&out_json)?);
             } else {
@@ -603,12 +613,15 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     ui::command(result.archive_path.display())
                 ));
                 ui::info(ui::dim(format!(
-                    "lific {} · schema v{} · db {} bytes · {} attachments ({} bytes)",
+                    "lific {} · schema v{} · db {} bytes · {} attachments ({} bytes) · \
+                     {} archived projects ({} bytes)",
                     m.lific_version,
                     m.schema_version,
                     m.db_size_bytes,
                     m.attachment_count,
-                    m.attachment_bytes
+                    m.attachment_bytes,
+                    m.archived_project_count,
+                    m.archived_project_bytes
                 )));
             }
             return Ok(());
@@ -639,6 +652,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                     "schema_version": m.schema_version,
                     "created_at": m.created_at,
                     "attachment_count": result.attachment_count,
+                    "archived_project_count": result.archived_project_count,
                     "moved_existing_to": result
                         .moved_existing_to
                         .as_ref()
@@ -650,11 +664,13 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
                 ui::intro("lific restore");
                 ui::step(format!("Restored from {}", ui::command(archive.display())));
                 ui::info(ui::dim(format!(
-                    "database {} · from lific {} · schema v{} · {} attachments",
+                    "database {} · from lific {} · schema v{} · {} attachments · \
+                     {} archived projects",
                     result.db_path.display(),
                     m.lific_version,
                     m.schema_version,
-                    result.attachment_count
+                    result.attachment_count,
+                    result.archived_project_count
                 )));
                 if let Some(moved) = &result.moved_existing_to {
                     ui::warn(format!(
@@ -977,6 +993,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ref identifier) = bound_project {
                 info!(project = %identifier, "stdio session bound to project");
             }
+
+            // LIF-509: a stdio session may be the only process ever opening
+            // this database, so it keeps the backups too. The schedule is
+            // shared through the backup directory, so a session per agent
+            // does not multiply them.
+            backup::start_scheduler(&cfg, pool.clone());
 
             let server =
                 mcp::LificMcp::for_stdio(pool, stdio_auth).with_bound_project(bound_project);
@@ -1494,13 +1516,7 @@ async fn cmd_init(
                     Err(e) => service_error = Some(e),
                 }
             }
-            None => {
-                service_error = Some(
-                    "no supported service manager found (needs a systemd user session on \
-                     Linux, or launchd on macOS)"
-                        .to_string(),
-                )
-            }
+            None => service_error = Some(cli::service::missing_manager_message()),
         }
     }
 
@@ -1559,7 +1575,8 @@ async fn cmd_init(
 
     if let Some((mgr, ref report)) = service_report {
         ui::step(format!(
-            "Service installed — {} {}",
+            "Service installed — starts automatically at login · remove anytime with {} — {} {}",
+            ui::command("lific service uninstall"),
             report.manager,
             ui::dim(&report.definition)
         ));
@@ -1642,11 +1659,7 @@ fn cmd_service(
         return Ok(());
     }
     let Some(mgr) = cli::service::detect() else {
-        return Err(
-            "no supported service manager found (needs a systemd user session on \
-                    Linux, or launchd on macOS)"
-                .into(),
-        );
+        return Err(cli::service::missing_manager_message().into());
     };
     match action {
         ServiceAction::Install => {
@@ -1673,7 +1686,8 @@ fn cmd_service(
             } else {
                 ui::intro("lific service install");
                 ui::step(format!(
-                    "Service installed and started — {} {}",
+                    "Service installed and started — starts at login · remove with {} — {} {}",
+                    ui::command("lific service uninstall"),
                     report.manager,
                     ui::dim(&report.definition)
                 ));
@@ -1720,9 +1734,10 @@ fn cmd_service(
                 ));
             } else if s.installed {
                 ui::error(format!(
-                    "Service is installed but NOT running ({}). Start it: {}",
+                    "Service is installed but NOT running ({}). Start it: {} · or remove it: {}",
                     s.manager,
-                    ui::command("lific service restart")
+                    ui::command("lific service restart"),
+                    ui::command("lific service uninstall")
                 ));
             } else {
                 ui::error(format!(

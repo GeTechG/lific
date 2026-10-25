@@ -17,6 +17,8 @@
 //! * a project's `lead_user_id` is dropped;
 //! * an issue's waits (user and date blockers, LIF-484) are dropped from
 //!   every issue and sync row: they name accounts and carry private notes;
+//! * an issue's assignment (LIF-147) is dropped the same way: it names
+//!   accounts;
 //! * an issue's `source` (import provenance) is dropped, and every relation
 //!   identifier naming an issue outside this project is filtered out, so a
 //!   public issue never names a private one;
@@ -87,10 +89,10 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
     issue.waits.clear();
     // Properties are internal bookkeeping (paths, tool state), like `source`.
     issue.properties.clear();
-    // The assignee names an account, like a wait.
-    issue.assignment = Default::default();
     // The run log is not exposed publicly, nor is the fact that one exists.
     issue.last_log_at = None;
+    issue.needs_human = false;
+    issue.assignees.clear();
     for relations in [
         &mut issue.blocks,
         &mut issue.blocked_by,
@@ -107,8 +109,9 @@ pub fn scrub_issue(project: &Project, issue: &mut Issue) {
 fn scrub_issue_change(issue: &mut crate::db::models::IssueChange) {
     issue.waits.clear();
     issue.properties.clear();
-    issue.assignment = Default::default();
     issue.last_log_at = None;
+    issue.needs_human = false;
+    issue.assignees.clear();
 }
 
 /// Keep the display name, drop the account behind it.
@@ -473,7 +476,7 @@ mod tests {
                 &CreateIssue {
                     project_id: public.id,
                     title: "Carrier".into(),
-                    assignee: Some("owner".into()),
+                    assignees: Some(vec!["owner".into()]),
                     set_properties: [("footprint".to_string(), "src/secret/".to_string())].into(),
                     ..Default::default()
                 },

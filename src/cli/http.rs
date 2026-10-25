@@ -32,8 +32,8 @@ use super::weblinks::{
 };
 use super::{
     Command, CommentAction, ExportAction, FolderAction, IssueAction, IssueLogAction, LabelAction,
-    ModuleAction, PageAction, ProjectAction, assignee_edit, edited_labels, log_lines, owned_labels,
-    parsed_property_sets, render,
+    ModuleAction, PageAction, ProjectAction, assignment_arg, edited_labels, log_lines,
+    owned_labels, parsed_property_sets, render,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -251,12 +251,10 @@ impl HttpBackend {
                     let issue: models::Issue = decode(value)?;
                     render::issue_updated(&issue)
                 }
-                IssueAction::Link {
-                    source,
-                    target,
-                    relation_type,
-                } => render::issue_linked(source, target, relation_type),
-                IssueAction::Unlink { source, target } => render::issue_unlinked(source, target),
+                IssueAction::Link { .. } | IssueAction::Unlink { .. } => {
+                    let issue: models::Issue = decode(value)?;
+                    render::issue_relations(&issue)
+                }
                 IssueAction::Log {
                     action: IssueLogAction::Add { identifier, .. },
                 } => {
@@ -426,8 +424,8 @@ impl HttpBackend {
                 priority,
                 module,
                 label,
-                assignee,
                 workable,
+                assignee,
                 limit,
             } => {
                 let project_id = self.project_id(project).await?;
@@ -447,10 +445,10 @@ impl HttpBackend {
                     label
                         .as_deref()
                         .map(|value| ("label", Cow::Borrowed(value))),
+                    workable.then_some(("workable", Cow::Borrowed("true"))),
                     assignee
                         .as_deref()
                         .map(|value| ("assignee", Cow::Borrowed(value))),
-                    workable.then_some(("workable", Cow::Borrowed("true"))),
                     limit.map(|value| ("limit", Cow::Owned(value.to_string()))),
                 ]
                 .into_iter()
@@ -471,7 +469,7 @@ impl HttpBackend {
                 module,
                 labels,
                 set,
-                assignee,
+                assign,
             } => {
                 let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
                 let project_id = self.project_id(project).await?;
@@ -489,9 +487,9 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels: owned_labels(labels.as_deref()).unwrap_or_default(),
-                    assignee: assignee.clone(),
                     set_properties,
                     source: None,
+                    assignees: assignment_arg(assign.as_deref(), false),
                     // Never serialized; the server names its own actor from
                     // the authenticated caller (LIF-409).
                     ..Default::default()
@@ -510,7 +508,7 @@ impl HttpBackend {
                 remove_label,
                 set,
                 unset,
-                assignee,
+                assign,
                 unassign,
             } => {
                 let set_properties = parsed_property_sets(set).map_err(|e| anyhow!(e))?;
@@ -547,30 +545,34 @@ impl HttpBackend {
                     start_date: None,
                     target_date: None,
                     labels,
-                    assignee: assignee_edit(assignee, *unassign),
                     // A server-side delta: no read, no `expected_seq`.
                     set_properties,
                     unset_properties: unset.clone(),
                     // LIF-441: only the label edits above read before they
                     // write; everything else stays on last-writer-wins.
                     expected_seq,
+                    assignees: assignment_arg(assign.as_deref(), *unassign),
                     // See the create path: server-side, never sent.
                     ..Default::default()
                 };
                 self.send_json(Method::PUT, &format!("/api/issues/{id}"), &body)
                     .await
             }
+            // The link endpoints only acknowledge; re-read the source issue so
+            // the output matches the SQL backend and shows the new relations.
             IssueAction::Link {
                 source,
                 target,
-                relation_type,
+                relation,
             } => {
-                let body = serde_json::json!({
+                let body = json!({
                     "source": source,
                     "target": target,
-                    "relation_type": relation_type,
+                    "relation_type": relation.as_str(),
                 });
                 self.send_json(Method::POST, "/api/issues/link", &body)
+                    .await?;
+                self.get_json(&format!("/api/issues/resolve/{}", segment(source)), &[])
                     .await
             }
             IssueAction::Log {
@@ -609,8 +611,10 @@ impl HttpBackend {
                     .await
             }
             IssueAction::Unlink { source, target } => {
-                let body = serde_json::json!({"source": source, "target": target});
+                let body = json!({ "source": source, "target": target });
                 self.send_json(Method::POST, "/api/issues/unlink", &body)
+                    .await?;
+                self.get_json(&format!("/api/issues/resolve/{}", segment(source)), &[])
                     .await
             }
         }
@@ -1647,7 +1651,7 @@ mod tests {
         },
         cli::{
             Command, CommentAction, ExportAction, FolderAction, IssueAction, LabelAction,
-            ModuleAction, PageAction, ProjectAction, split_csv,
+            ModuleAction, PageAction, ProjectAction, RelationType, split_csv,
         },
         config::AuthConfig,
         db::models::AuthUser,
@@ -2999,6 +3003,144 @@ mod tests {
         fixture.server.abort();
     }
 
+    /// LIF-147: the HTTP backend sends `--assign` and `--assignee` and the
+    /// server resolves "me" to the caller.
+    #[tokio::test]
+    async fn assigns_issues_over_http_against_real_api_router() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let created = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Create {
+                        project: "TST".into(),
+                        title: "Mine".into(),
+                        description: String::new(),
+                        status: "todo".into(),
+                        priority: "none".into(),
+                        module: None,
+                        labels: None,
+                        set: Vec::new(),
+                        assign: Some("me".into()),
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["needs_human"], true);
+        let me = created["assignees"][0]["username"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let listed = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::List {
+                        project: "TST".into(),
+                        status: None,
+                        priority: None,
+                        module: None,
+                        label: None,
+                        workable: false,
+                        assignee: Some(me),
+                        limit: None,
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+        assert_eq!(listed[0]["title"], "Mine");
+
+        let identifier = created["identifier"].as_str().unwrap().to_owned();
+        let cleared = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Update {
+                        identifier,
+                        title: None,
+                        description: None,
+                        status: None,
+                        priority: None,
+                        module: None,
+                        labels: None,
+                        add_label: Vec::new(),
+                        remove_label: Vec::new(),
+                        set: Vec::new(),
+                        unset: Vec::new(),
+                        assign: None,
+                        unassign: true,
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(cleared["needs_human"], false);
+        fixture.server.abort();
+    }
+
+    #[tokio::test]
+    async fn links_and_unlinks_issues_over_http_against_real_api_router() {
+        let fixture = spawn_real_api_server().await;
+        let backend = HttpBackend::new(&fixture.url, None).unwrap();
+        let duplicate = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Create {
+                        project: "TST".into(),
+                        title: "Duplicate".into(),
+                        description: String::new(),
+                        status: "backlog".into(),
+                        priority: "none".into(),
+                        module: None,
+                        labels: None,
+                        set: Vec::new(),
+                        assign: None,
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        let duplicate = duplicate["identifier"].as_str().unwrap().to_owned();
+
+        let linked = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Link {
+                        source: duplicate.clone(),
+                        target: fixture.issue_identifier.clone(),
+                        relation: RelationType::Duplicate,
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        assert_eq!(linked["identifier"], duplicate.as_str());
+        assert_eq!(linked["duplicates"], json!([fixture.issue_identifier]));
+
+        let unlinked = backend
+            .execute(
+                &Command::Issue {
+                    action: IssueAction::Unlink {
+                        source: duplicate.clone(),
+                        target: fixture.issue_identifier.clone(),
+                    },
+                },
+                IssueLinkOutput::Url,
+            )
+            .await
+            .unwrap();
+        // Empty relation lists are omitted from the serialized issue.
+        assert!(unlinked.get("duplicates").is_none());
+        fixture.server.abort();
+    }
+
     #[tokio::test]
     async fn edits_single_issue_labels_over_http_against_real_api_router() {
         let fixture = spawn_real_api_server().await;
@@ -3039,7 +3181,7 @@ mod tests {
                 remove_label: remove.iter().map(|v| (*v).to_string()).collect(),
                 set: Vec::new(),
                 unset: Vec::new(),
-                assignee: None,
+                assign: None,
                 unassign: false,
             },
         };
@@ -3085,7 +3227,7 @@ mod tests {
                         remove_label: Vec::new(),
                         set: Vec::new(),
                         unset: Vec::new(),
-                        assignee: None,
+                        assign: None,
                         unassign: false,
                     },
                 },
@@ -3137,7 +3279,7 @@ mod tests {
                         module: None,
                         labels: None,
                         set: owned(&["footprint=src/a.js, test/", "pr=41"]),
-                        assignee: None,
+                        assign: None,
                     },
                 },
                 IssueLinkOutput::Url,
@@ -3162,7 +3304,7 @@ mod tests {
                 remove_label: Vec::new(),
                 set: owned(set),
                 unset: owned(unset),
-                assignee: None,
+                assign: None,
                 unassign: false,
             },
         };
@@ -3215,86 +3357,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        fixture.server.abort();
-    }
-
-    #[tokio::test]
-    async fn assigns_filters_and_unassigns_over_http() {
-        let fixture = spawn_real_api_server().await;
-        let backend = HttpBackend::new(&fixture.url, None).unwrap();
-        let created = backend
-            .execute(
-                &Command::Issue {
-                    action: IssueAction::Create {
-                        project: "TST".into(),
-                        title: "Mine".into(),
-                        description: String::new(),
-                        status: "backlog".into(),
-                        priority: "none".into(),
-                        module: None,
-                        labels: None,
-                        set: Vec::new(),
-                        assignee: Some("test-admin".into()),
-                    },
-                },
-                IssueLinkOutput::Url,
-            )
-            .await
-            .unwrap();
-        assert_eq!(created["assignee"], "test-admin");
-        let identifier = created["identifier"].as_str().unwrap().to_owned();
-        let update = |assignee: Option<&str>, unassign| Command::Issue {
-            action: IssueAction::Update {
-                identifier: identifier.clone(),
-                title: None,
-                description: None,
-                status: None,
-                priority: None,
-                module: None,
-                labels: None,
-                add_label: Vec::new(),
-                remove_label: Vec::new(),
-                set: Vec::new(),
-                unset: Vec::new(),
-                assignee: assignee.map(str::to_string),
-                unassign,
-            },
-        };
-        let list = Command::Issue {
-            action: IssueAction::List {
-                project: "TST".into(),
-                status: None,
-                priority: None,
-                module: None,
-                label: None,
-                assignee: Some("test-admin".into()),
-                workable: false,
-                limit: None,
-            },
-        };
-        let listed = backend.execute(&list, IssueLinkOutput::Url).await.unwrap();
-        let listed = listed.as_array().unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0]["identifier"], identifier.as_str());
-
-        let refused = backend
-            .execute(&update(Some("nobody"), false), IssueLinkOutput::Url)
-            .await
-            .unwrap_err();
-        assert!(refused.to_string().contains("no active user"), "{refused}");
-        // Neither flag: the body carries no `assignee` key, so it is kept.
-        let kept = backend
-            .execute(&update(None, false), IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        assert_eq!(kept["assignee"], "test-admin");
-        let cleared = backend
-            .execute(&update(None, true), IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        assert!(cleared["assignee"].is_null());
-        let listed = backend.execute(&list, IssueLinkOutput::Url).await.unwrap();
-        assert!(listed.as_array().unwrap().is_empty());
         fixture.server.abort();
     }
 
@@ -3358,66 +3420,6 @@ mod tests {
         let after = backend.execute(&get, IssueLinkOutput::Url).await.unwrap();
         assert_eq!(after["seq"], before["seq"], "a log line is not an edit");
         assert_eq!(after["updated_at"], before["updated_at"]);
-        fixture.server.abort();
-    }
-
-    #[tokio::test]
-    async fn links_and_unlinks_issues_over_http_against_real_api_router() {
-        let fixture = spawn_real_api_server().await;
-        {
-            let conn = fixture.db.write().unwrap();
-            crate::db::queries::create_issue(
-                &conn,
-                &models::CreateIssue {
-                    project_id: 1,
-                    title: "Blocked".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        }
-        let backend = HttpBackend::new(&fixture.url, None).unwrap();
-        let issue = |action| Command::Issue { action };
-        let get_blocked = || {
-            issue(IssueAction::Get {
-                identifier: "TST-2".into(),
-            })
-        };
-
-        let linked = backend
-            .execute(
-                &issue(IssueAction::Link {
-                    source: "TST-1".into(),
-                    target: "TST-2".into(),
-                    relation_type: "blocks".into(),
-                }),
-                IssueLinkOutput::Url,
-            )
-            .await
-            .unwrap();
-        assert_eq!(linked, json!({"linked": true}));
-        let blocked = backend
-            .execute(&get_blocked(), IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        assert_eq!(blocked["blocked_by"], json!(["TST-1"]));
-
-        let unlinked = backend
-            .execute(
-                &issue(IssueAction::Unlink {
-                    source: "TST-1".into(),
-                    target: "TST-2".into(),
-                }),
-                IssueLinkOutput::Url,
-            )
-            .await
-            .unwrap();
-        assert_eq!(unlinked, json!({"unlinked": true}));
-        let free = backend
-            .execute(&get_blocked(), IssueLinkOutput::Url)
-            .await
-            .unwrap();
-        assert!(free.get("blocked_by").is_none());
         fixture.server.abort();
     }
 

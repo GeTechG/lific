@@ -291,6 +291,8 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue properties",
         include_str!("../../migrations/059_issue_properties.sql"),
     ),
+    // 60 predates upstream's assignees (62), which replaced it: the column
+    // stays for databases that applied it, and nothing reads or writes it.
     (
         60,
         "issue assignee",
@@ -300,6 +302,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         61,
         "issue run log",
         include_str!("../../migrations/061_issue_log.sql"),
+    ),
+    (
+        62,
+        "issue assignees",
+        include_str!("../../migrations/062_issue_assignees.sql"),
+    ),
+    (
+        63,
+        "archived projects",
+        include_str!("../../migrations/063_archived_projects.sql"),
     ),
 ];
 
@@ -991,7 +1003,7 @@ mod tests {
         assert_eq!(before.len(), 5);
         let triggers_before = count(
             &conn,
-            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties' AND name<>'audit_issues_assignee'",
+            "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name NOT IN ('issue_properties','issue_assignees') AND name NOT IN ('audit_issues_assignee','issue_assignees_keep_human_bd')",
         );
 
         run(&conn).unwrap();
@@ -1000,7 +1012,7 @@ mod tests {
         assert_eq!(
             count(
                 &conn,
-                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name<>'issue_properties' AND name<>'audit_issues_assignee'"
+                "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND tbl_name NOT IN ('issue_properties','issue_assignees') AND name NOT IN ('audit_issues_assignee','issue_assignees_keep_human_bd')"
             ),
             triggers_before
         );
@@ -1115,7 +1127,12 @@ mod tests {
         let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
         assert_eq!(issue.status, Status::InReview);
         assert_eq!(issue.properties["footprint"], "src/");
-        assert_eq!(issue.assignment.assignee, None);
+        let assignee_id: Option<i64> = conn
+            .query_row("SELECT assignee_id FROM issues WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(assignee_id, None);
         assert_eq!(seq_of(&conn, "issues", 1), seq_before);
 
         conn.execute("UPDATE issues SET assignee_id = 1 WHERE id = 1", [])
@@ -1133,6 +1150,45 @@ mod tests {
                 .is_err(),
             "the assignee must be a real account"
         );
+    }
+
+    /// A database that applied this fork's 058-061 before upstream's
+    /// assignees and archived projects existed gets them as 062 and 063: its
+    /// issues, properties and run log stay, and the new tables work.
+    #[test]
+    fn upstream_assignees_and_archives_apply_on_top_of_the_fork_migrations() {
+        let conn = migrated_up_to(62);
+        conn.execute_batch(
+            "INSERT INTO users(id,username,email,password_hash,is_admin) VALUES(1,'root','r@t','x',1);
+             INSERT INTO projects(id,name,identifier) VALUES(1,'Before','BEF');
+             INSERT INTO issues(id,project_id,sequence,title,status,assignee_id) VALUES(1,1,1,'Old','in_review',1);
+             INSERT INTO issue_properties(issue_id,name,value) VALUES(1,'footprint','src/');
+             INSERT INTO issue_log(issue_id,source,text) VALUES(1,'run-1','hello');",
+        )
+        .unwrap();
+        let seq_before = seq_of(&conn, "issues", 1);
+
+        run(&conn).unwrap();
+
+        assert_eq!(
+            count(&conn, "SELECT MAX(version) FROM _migrations"),
+            latest_version()
+        );
+        let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
+        assert_eq!(issue.status, Status::InReview);
+        assert_eq!(issue.properties["footprint"], "src/");
+        assert!(issue.last_log_at.is_some());
+        assert!(issue.assignees.is_empty() && !issue.needs_human);
+        assert_eq!(seq_of(&conn, "issues", 1), seq_before);
+
+        conn.execute(
+            "INSERT INTO issue_assignees(issue_id,user_id) VALUES(1,1)",
+            [],
+        )
+        .unwrap();
+        let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
+        assert_eq!(issue.assignees.len(), 1);
+        assert_eq!(count(&conn, "SELECT count(*) FROM archived_projects"), 0);
     }
 
     /// Migration 061 adds the run log next to existing issues: they keep
@@ -1158,7 +1214,6 @@ mod tests {
         .unwrap();
         let issue = crate::db::queries::get_issue(&conn, 1).unwrap();
         assert_eq!(issue.status, Status::InReview);
-        assert_eq!(issue.assignment.assignee.as_deref(), Some("root"));
         assert_eq!(issue.properties["footprint"], "src/");
         assert!(issue.last_log_at.is_some());
         assert_eq!(seq_of(&conn, "issues", 1), seq_before);

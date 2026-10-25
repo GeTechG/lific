@@ -251,38 +251,6 @@ fn an_archive_from_before_properties_still_imports() {
 }
 
 #[test]
-fn the_assignee_travels_by_username_and_an_unknown_account_arrives_unassigned() {
-    let (source, dir, store) = source();
-    source
-        .write()
-        .unwrap()
-        .execute_batch(
-            "UPDATE issues SET assignee_id = 2 WHERE id = 30;
-             UPDATE issues SET assignee_id = 3 WHERE id = 31;",
-        )
-        .unwrap();
-    let archive = dir.path().join("assignees.tar.gz");
-    export(&source, &store, "LIF", &archive).unwrap();
-    let (dest, _dest_dir, dest_store) = destination();
-    let report = import(&dest, &dest_store, &archive, "owner").unwrap();
-    assert!(
-        report
-            .external_references
-            .iter()
-            .any(|r| r.contains("issue_assignees: no active user named outsider")),
-        "{:?}",
-        report.external_references
-    );
-    let conn = dest.read().unwrap();
-    let assignee = |identifier: &str| {
-        let id = queries::resolve_identifier(&conn, identifier).unwrap();
-        queries::get_issue(&conn, id).unwrap().assignment.assignee
-    };
-    assert_eq!(assignee("LIF-1").as_deref(), Some("Blake"));
-    assert_eq!(assignee("LIF-2"), None);
-}
-
-#[test]
 fn an_archive_from_before_assignees_still_imports() {
     let (source, dir, _store) = source();
     let conn = source.read().unwrap();
