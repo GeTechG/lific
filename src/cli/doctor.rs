@@ -26,7 +26,9 @@
 //!    lific process"); a witness naming a missing file fails with that path
 //!    named; a witness that disagrees with a candidate-found config warns,
 //!    naming both (a repo-local config beside a running personal instance is
-//!    legitimate — the divergence is the fact worth surfacing).
+//!    legitimate — the divergence is the fact worth surfacing). A candidate
+//!    that failed to parse and was replaced by a witness also warns, naming
+//!    the parse error.
 //!
 //!    A failed resolution is **fail-closed**: every check that would otherwise
 //!    read a configured value is skipped with that reason named, because the
@@ -321,11 +323,7 @@ fn select_instance_config(
             divergent: Vec::new(),
         };
     };
-    let superseded = match &resolution {
-        Err(error) => Some(error.to_string()),
-        Ok(resolved) if resolved.source == crate::config::ConfigSource::BuiltInDefault => None,
-        Ok(_) => None,
-    };
+    let superseded = resolution.as_ref().err().map(ToString::to_string);
     let divergent = witnesses
         .iter()
         .filter_map(|(other, other_path)| {
@@ -612,8 +610,10 @@ fn check_config(selection: &ConfigSelection) -> Check {
             }
             // Witnesses that disagree with the selected config surface here
             // rather than overruling it: the divergence is the fact worth
-            // knowing (a stale service definition is its own problem).
-            let status = if divergent.is_empty() {
+            // knowing (a stale service definition is its own problem). A
+            // broken candidate the witness replaced warns too: every command
+            // run without --config from here still resolves to that file.
+            let status = if divergent.is_empty() && superseded.is_none() {
                 Status::Pass
             } else {
                 Status::Warn
@@ -2762,6 +2762,41 @@ mod tests {
         );
         assert!(!detail.contains("reinstall"), "detail: {detail}");
         assert!(detail.contains("restore the file"), "detail: {detail}");
+    }
+
+    #[tokio::test]
+    async fn a_broken_candidate_replaced_by_a_witness_still_warns() {
+        // The witness supplies the instance, but the malformed candidate is
+        // what every command without --config resolves to from here, so it
+        // must not hide behind a pass.
+        let tmp = tempfile::tempdir().unwrap();
+        let witness = witness_config_file(tmp.path(), "running.toml");
+        let resolution = malformed_config_resolution(tmp.path());
+        assert!(resolution.is_err());
+
+        let report = build_report(
+            resolution,
+            Witnesses {
+                explicit: false,
+                running: Some(&witness),
+                installed: None,
+            },
+            None,
+            None,
+            DatabaseCheckMode::ReadOnly,
+        )
+        .await;
+
+        assert_eq!(status_of(&report.checks, "config"), Some(Status::Warn));
+        let detail = detail_of(&report.checks, "config");
+        assert!(
+            detail.contains("the running lific process"),
+            "detail: {detail}"
+        );
+        assert!(
+            detail.contains("candidate search had failed"),
+            "detail: {detail}"
+        );
     }
 
     #[tokio::test]
