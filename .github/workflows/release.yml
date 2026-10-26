@@ -307,6 +307,83 @@ jobs:
             --draft=false \
             --latest
 
+  # Point the Homebrew tap (VoidNullable/homebrew-tap) at this release, so
+  # `brew install voidnullable/tap/lific` and `brew upgrade` pick it up. The
+  # formula installs the binaries the release job just published, pinned to the
+  # hashes in the published sha256sums.txt. See docs/homebrew.md.
+  #
+  # Non-fatal like publish-registry: the release has shipped by now, and a tap
+  # that lags one version is better than a failed release. Without the
+  # HOMEBREW_TAP_DEPLOY_KEY secret the job skips with a notice.
+  homebrew:
+    needs: [verify, release]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      HAS_TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY != '' }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - name: Skip without a tap deploy key
+        if: env.HAS_TAP_KEY != 'true'
+        run: echo "::notice::HOMEBREW_TAP_DEPLOY_KEY is not set; skipping the Homebrew tap update (see docs/homebrew.md)."
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: env.HAS_TAP_KEY == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Render the formula from the published checksums
+        if: env.HAS_TAP_KEY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern sha256sums.txt
+          bash scripts/render-homebrew-formula.sh "${VERSION}" sha256sums.txt > lific.rb
+          cat lific.rb
+
+      # The deploy key has write access to the tap repository only. Its
+      # credentials must persist so the push step below can use them.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: env.HAS_TAP_KEY == 'true'
+        with:
+          repository: VoidNullable/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: Commit the formula to the tap checkout
+        if: env.HAS_TAP_KEY == 'true'
+        run: |
+          mkdir -p tap/Formula
+          cp lific.rb tap/Formula/lific.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/lific.rb
+          if git diff --cached --quiet; then
+            echo "Formula/lific.rb already matches ${VERSION}."
+          else
+            git commit -m "lific ${VERSION}"
+          fi
+
+      # Install from the local commit before it is pushed, so a formula that
+      # does not install never reaches users.
+      - name: Install and test the formula
+        if: env.HAS_TAP_KEY == 'true'
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew tap voidnullable/tap "${GITHUB_WORKSPACE}/tap"
+          brew install voidnullable/tap/lific
+          brew test voidnullable/tap/lific
+          lific --version | grep -F "lific ${VERSION}"
+
+      - name: Push the formula
+        if: env.HAS_TAP_KEY == 'true'
+        run: git -C tap push origin HEAD
+
   publish:
     needs: [verify, release]
     runs-on: ubuntu-latest
