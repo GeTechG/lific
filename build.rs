@@ -47,8 +47,23 @@ fn embed_windows_manifest() {
     embed_manifest::embed_manifest_file(&path).expect("embed the Windows manifest");
 }
 
+/// Gives the Windows main thread the same 8 MB stack Linux and macOS give it,
+/// instead of the 1 MB MSVC default. Startup runs clap's derived builders on
+/// that thread, and unoptimized builds keep every builder step in its own
+/// stack slot: `Command::augment_subcommands` alone reserves over 400 KB, and
+/// it grows with each CLI argument. Debug binaries were one subcommand away
+/// from overflowing before `--version` could print.
+fn reserve_windows_main_stack() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
+}
+
 fn main() {
     embed_windows_manifest();
+    reserve_windows_main_stack();
 
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());

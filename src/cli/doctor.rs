@@ -311,10 +311,20 @@ async fn check_reachable_remote(
     credential_base: &str,
 ) -> Vec<Check> {
     let mut checks = vec![check_oauth_discovery(client, base).await];
+    let mut withheld = false;
     let (key, key_source) = match explicit_key {
         Some(key) => (Some(key.to_owned()), None),
         None => match crate::cli::credentials::load_with_source(credential_base) {
-            Ok(Some((key, source))) => (Some(key), Some(source)),
+            // A stored credential is issued for `credential_base`; present it
+            // only to an endpoint it may travel to. A mismatch yields no token,
+            // so the check runs unauthenticated rather than leaking the token.
+            Ok(Some((credential, source))) => match credential.for_endpoint(base) {
+                Some(token) => (Some(token.to_owned()), Some(source)),
+                None => {
+                    withheld = true;
+                    (None, None)
+                }
+            },
             Ok(None) => (None, None),
             Err(error) => {
                 checks.push(Check::new(
@@ -330,8 +340,20 @@ async fn check_reachable_remote(
     if let Some(source) = key_source {
         mcp.detail = format!("{} (using {})", mcp.detail, source.label());
     }
+    if withheld {
+        mcp.detail = withheld_credential_note(&mcp.detail, credential_base, base);
+    }
     checks.push(mcp);
     checks
+}
+
+/// Say why a stored key was not used, so a withheld credential does not read
+/// like a missing one.
+fn withheld_credential_note(detail: &str, credential_base: &str, base: &str) -> String {
+    format!(
+        "{detail} (stored key for {credential_base} not sent to {base}: a stored key \
+         only goes to its own origin or a loopback address; pass --key to use one)"
+    )
 }
 
 fn skipped_local_checks(detail: &str) -> [Check; 2] {
@@ -1131,6 +1153,19 @@ mod tests {
 
         cfg.server.host = "fd00::5".into();
         assert_eq!(connect_base(&cfg), "http://[fd00::5]:7777");
+    }
+
+    #[test]
+    fn a_withheld_credential_is_named_with_both_origins() {
+        let note = withheld_credential_note(
+            "auth enforced",
+            "https://lific.example.com",
+            "http://tracker.example:3456",
+        );
+        assert!(note.starts_with("auth enforced"), "{note}");
+        assert!(note.contains("https://lific.example.com"), "{note}");
+        assert!(note.contains("http://tracker.example:3456"), "{note}");
+        assert!(note.contains("--key"), "{note}");
     }
 
     #[test]

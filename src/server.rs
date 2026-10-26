@@ -15,7 +15,7 @@ use axum::{
     Router,
     body::Body,
     extract::Request,
-    http::{HeaderName, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
     routing::{any, get},
@@ -40,6 +40,24 @@ use crate::{
 #[folder = "$LIFIC_WEB_DIST/"]
 #[allow(dead_code)]
 struct WebAssets;
+
+#[cfg(test)]
+mod inline_attachment_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_exact_inline_header_suppresses_the_http_attachment_origin() {
+        let mut headers = HeaderMap::new();
+        let origin = Some("https://example.test/");
+        assert!(mcp_issue_link_context(origin, &headers, &[]).is_some());
+
+        headers.insert(mcp::INLINE_ATTACHMENT_HEADER, HeaderValue::from_static("0"));
+        assert!(mcp_issue_link_context(origin, &headers, &[]).is_some());
+
+        headers.insert(mcp::INLINE_ATTACHMENT_HEADER, HeaderValue::from_static("1"));
+        assert!(mcp_issue_link_context(origin, &headers, &[]).is_none());
+    }
+}
 
 /// Serve an embedded static file, or fall back to index.html for SPA routing.
 async fn serve_frontend(uri: axum::http::Uri) -> impl IntoResponse {
@@ -342,8 +360,8 @@ pub(crate) fn build_app_with_store(
                 // rmcp copies HTTP request extensions into the spawned tool
                 // task's RequestContext. Keep identity bound to that request.
                 let issue_links = mcp_issue_link_context(
-                    &request,
                     mcp_public_url.as_deref(),
+                    request.headers(),
                     &mcp_allowed_hosts_for_links,
                 );
 
@@ -621,17 +639,7 @@ pub async fn run(cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
         info!(active_keys = count, "API key auth enabled");
     }
 
-    // Start backup task
-    if cfg.backup.enabled {
-        let pool_arc = Arc::new(pool.clone());
-        backup::start_backup_task(pool_arc, cfg.database.path.clone(), cfg.backup.clone());
-        info!(
-            dir = %cfg.backup_dir().display(),
-            interval = %format!("{}m", cfg.backup.interval_minutes),
-            retain = cfg.backup.retain,
-            "automatic backups enabled"
-        );
-    }
+    backup::start_scheduler(cfg, pool.clone());
 
     // Empty the trash on a schedule (LIF-438). A delete is a tombstone now, so
     // something has to collect them once they are past the recovery window.
@@ -736,15 +744,22 @@ fn build_global_cors(cors_origins: &[String]) -> CorsLayer {
     }
 }
 
+/// Stdio proxies ask for bytes in the MCP result because their client cannot
+/// use the HTTP backend's authenticated download URL directly.
 fn mcp_issue_link_context(
-    request: &Request<Body>,
     public_url: Option<&str>,
+    headers: &HeaderMap,
     allowed_hosts: &[String],
 ) -> Option<links::IssueLinkContext> {
+    if headers
+        .get(mcp::INLINE_ATTACHMENT_HEADER)
+        .is_some_and(|value| value == "1")
+    {
+        return None;
+    }
     links::IssueLinkContext::for_http_request(
         public_url,
-        request
-            .headers()
+        headers
             .get(header::HOST)
             .and_then(|value| value.to_str().ok()),
         allowed_hosts,
@@ -783,8 +798,11 @@ fn build_authless_mcp_router(
     Router::new().route(
         &format!("/mcp/{token}"),
         any(move |mut request: Request<Body>| async move {
-            let issue_links =
-                mcp_issue_link_context(&request, public_url.as_deref(), &allowed_hosts_for_links);
+            let issue_links = mcp_issue_link_context(
+                public_url.as_deref(),
+                request.headers(),
+                &allowed_hosts_for_links,
+            );
             if let Some(issue_links) = issue_links {
                 request
                     .extensions_mut()
