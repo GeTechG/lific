@@ -293,7 +293,7 @@
         {#if editable && mod.description.trim()}
           <ModeToggle
             mode={descriptionMode}
-            size="sm"
+            size="compact"
             disabled={saving}
             onSelect={(next) => descriptionRef?.setMode(next)}
           />
