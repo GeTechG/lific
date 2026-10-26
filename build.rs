@@ -68,22 +68,37 @@ fn main() {
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let source_dist = manifest_dir.join("web/dist");
+
+    // The built bundle: changing it must trigger a re-embed.
+    println!("cargo:rerun-if-changed=web/dist");
+    // The frontend sources: changing them cannot rebuild the bundle for us
+    // (unless `build-web` is on), but it re-runs this script so the staleness
+    // check below gets a chance to point out that web/dist no longer matches.
+    println!("cargo:rerun-if-changed=web/src");
+
     let dist = if has_frontend_entry(&source_dist) {
         source_dist
-    } else if matches!(std::env::var("PROFILE").as_deref(), Ok("release" | "dist")) {
+    } else if std::env::var_os("CARGO_FEATURE_BUILD_WEB").is_some() {
+        // Opt-in only: this runs `bun install`, which needs the network, so
+        // default builds stay hermetic for Nix and other sandboxed builders.
+        for input in FRONTEND_BUILD_INPUTS {
+            if manifest_dir.join(input).exists() {
+                println!("cargo:rerun-if-changed={input}");
+            }
+        }
         build_frontend(&manifest_dir, &out_dir)
     } else {
+        if matches!(std::env::var("PROFILE").as_deref(), Ok("release" | "dist")) {
+            panic!(
+                "web/dist/index.html is missing or empty; build the frontend first with `devenv tasks run lific:web:build`, or enable the `build-web` feature to build it with Bun during the Cargo build (for example `cargo install --git https://github.com/VoidNullable/lific --locked --features build-web`)"
+            );
+        }
         source_dist
     };
 
     // rust-embed resolves this at compile time, letting generated assets stay
     // under Cargo's build directory instead of mutating a Git checkout.
     println!("cargo:rustc-env=LIFIC_WEB_DIST={}", dist.display());
-
-    // The built bundle: changing it must trigger a re-embed.
-    println!("cargo:rerun-if-changed=web");
-    println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-env-changed=PATH");
 
     let src = manifest_dir.join("web/src");
 
@@ -102,8 +117,24 @@ fn main() {
     }
 }
 
-/// Build the frontend under OUT_DIR when installing directly from Git, where
-/// generated web/dist assets are intentionally not checked in.
+/// Files outside web/src that change what `bun run build` produces. Only
+/// watched when `build-web` builds the bundle, so node_modules and dist never
+/// trigger a rerun.
+const FRONTEND_BUILD_INPUTS: &[&str] = &[
+    "web/index.html",
+    "web/package.json",
+    "web/bun.lock",
+    "web/vite.config.ts",
+    "web/svelte.config.js",
+    "web/tsconfig.json",
+    "web/tsconfig.app.json",
+    "web/tsconfig.node.json",
+    "web/public",
+];
+
+/// Build the frontend under OUT_DIR for the `build-web` feature, used by
+/// `cargo install --git`: generated web/dist assets are intentionally not
+/// checked in, and the build must not write into the checkout.
 fn build_frontend(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
     let build_root = out_dir.join("frontend-build");
     let web_root = build_root.join("web");
@@ -198,7 +229,28 @@ fn newest_mtime(dir: &Path) -> Option<SystemTime> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_frontend_entry, newest_mtime};
+    use super::{copy_tree, has_frontend_entry, newest_mtime};
+
+    #[test]
+    fn staged_frontend_sources_leave_out_build_outputs_and_dependencies() {
+        let source = tempfile::tempdir().unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        for dir in ["src/lib", "dist", "node_modules/vite"] {
+            std::fs::create_dir_all(source.path().join(dir)).unwrap();
+        }
+        std::fs::write(source.path().join("package.json"), "{}").unwrap();
+        std::fs::write(source.path().join("src/lib/app.ts"), "export {}").unwrap();
+        std::fs::write(source.path().join("dist/index.html"), "stale").unwrap();
+        std::fs::write(source.path().join("node_modules/vite/index.js"), "").unwrap();
+
+        let web = staged.path().join("web");
+        copy_tree(source.path(), &web).unwrap();
+
+        assert!(web.join("package.json").is_file());
+        assert!(web.join("src/lib/app.ts").is_file());
+        assert!(!web.join("dist").exists());
+        assert!(!web.join("node_modules").exists());
+    }
 
     #[test]
     fn assets_without_an_html_entry_are_not_a_shippable_frontend() {

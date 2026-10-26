@@ -39,6 +39,13 @@ uninlined_format_args = "allow"
 useless_let_if_seq = "deny"
 unused_async = "deny"
 
+[features]
+# Build the web UI with Bun during the Cargo build when web/dist is empty, as
+# in a Git checkout: `cargo install --git ... --features build-web`. Needs Bun
+# and network access for `bun install`. Off by default so release builds still
+# fail without a prebuilt frontend and stay hermetic.
+build-web = []
+
 [dependencies]
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }

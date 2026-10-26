@@ -69,6 +69,16 @@ The package on crates.io carries the prebuilt web UI, so you do not need Bun and
 
 Cargo puts the binary in `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows), which rustup has already added to your `PATH`.
 
+### Install an unreleased commit from Git
+
+The Git repository does not carry the built web UI, so installing straight from it needs [Bun](https://bun.sh) and the `build-web` feature, which builds the frontend inside Cargo's temporary build directory:
+
+```bash
+cargo install --git https://github.com/VoidNullable/lific --branch master --locked --features build-web
+```
+
+`bun install` fetches the frontend's dependencies during the build, so this needs network access. Without `build-web`, the build stops with an error instead of producing a binary that has no web UI.
+
 ## Check the install
 
 ```bash
