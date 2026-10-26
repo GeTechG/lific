@@ -6,6 +6,7 @@
   // appears in two places:
   //
   //   - `size="sm"`         — compact, lives in the page/issue toolbar
+  //   - `size="compact"`    — sm at the topbar's h-7 control height
   //   - `size="floating"`   — large, fixed to the bottom-right of the
   //                           viewport so the user can flip modes from
   //                           anywhere on a long page
@@ -24,7 +25,7 @@
   }: {
     mode: "read" | "edit";
     onSelect: (next: "read" | "edit") => void;
-    size?: "sm" | "floating";
+    size?: "sm" | "floating" | "compact";
     disabled?: boolean;
   } = $props();
 
@@ -39,6 +40,7 @@
   class="mt"
   class:mt--floating={size === "floating"}
   class:mt--sm={size === "sm"}
+  class:mt--compact={size === "compact"}
   role="radiogroup"
   aria-label="Content view mode"
 >
@@ -173,6 +175,20 @@
   }
 
   /*
+   * Compact: for chrome rows that hold h-7 (28px) controls — Layout's
+   * topbar cells, the issues toolbar. Keeps the labels but drops the
+   * vertical padding so the pill lands on the same rhythm as every
+   * other topbar control; the fat default variant is what made the
+   * detail topbar's breadcrumb sit lower than its neighbors.
+   */
+  .mt--compact {
+    padding: 1px;
+  }
+  .mt--compact .mt__opt {
+    padding: 0.125rem 0.75rem;
+  }
+
+  /*
    * Phones: icon only. At 208px wide with both labels, the toolbar
    * variant was the single largest item in the detail topbar and shoved
    * Export, the delete menu, and the props-panel toggle clean off a
@@ -182,14 +198,16 @@
    * Icon-only takes it to ~84px. The accessible name moves to
    * aria-label on each option so hiding the text costs nothing to a
    * screen reader, and the pill + active color still carry the state.
-   * Scoped to --sm: the floating variant fixes itself to a corner with
-   * a whole viewport to spare and keeps its labels.
+   * Scoped to the toolbar variants (--sm, --compact): the floating
+   * variant fixes itself to a corner with a whole viewport to spare and
+   * keeps its labels.
    */
   @media (max-width: 639px) {
     .mt--sm .mt__opt {
       padding: 0.4375rem 0.75rem;
     }
-    .mt--sm .mt__label {
+    .mt--sm .mt__label,
+    .mt--compact .mt__label {
       display: none;
     }
   }
