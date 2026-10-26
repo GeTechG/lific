@@ -445,7 +445,7 @@ fn kprocargs2(pid: i32) -> Option<Vec<u8>> {
         if read != 0 || argmax <= 0 {
             return None;
         }
-        let mut buffer = vec![0u8; argmax as usize];
+        let mut buffer = vec![0u8; usize::try_from(argmax).ok()?];
         let mut size = buffer.len();
         let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
         let read = libc::sysctl(
