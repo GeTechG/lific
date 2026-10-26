@@ -499,7 +499,7 @@ in
     };
     "lific:release-test" = {
       cwd = repoRoot;
-      exec = "bash scripts/verify-release-binary.test.sh";
+      exec = "bash scripts/verify-release-binary.test.sh && bash scripts/render-homebrew-formula.test.sh";
     };
     "lific:devenv-test" = {
       cwd = repoRoot;
