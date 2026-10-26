@@ -84,6 +84,27 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  macos:
+    # The release workflow is the only other place macOS code compiles, and it
+    # runs on tags with the dist profile (no clippy, no cfg(test)). Clippy must
+    # run natively: code behind cfg(target_os = "macos") is invisible to the
+    # Linux lint, and cross-checking from Linux needs a macOS SDK for the C deps.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - name: Ensure web/dist exists for rust-embed
+        run: mkdir -p web/dist
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --all-targets
+
   windows-msvc-cross-build:
     # This is the proposed release path: Linux owns the reproducible Devenv
     # build, while Windows executes the exact uploaded bytes below.
