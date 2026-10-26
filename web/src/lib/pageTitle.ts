@@ -8,8 +8,8 @@
 //
 // Callers never learn any of that. A list route says pageTitle("Issues",
 // project); a detail route says pageTitle(identifier, title, project) once
-// its data lands — through the `lific:title` context App.svelte provides,
-// with the same set-on-load / clear-on-unmount lifecycle as `lific:topbar`.
+// its data lands, through the `lific:title` context App.svelte provides.
+// Routes only set; App.svelte resets the slot when the page changes.
 
 /** Max characters kept from a single part before it is cut. */
 const MAX_PART = 60;
