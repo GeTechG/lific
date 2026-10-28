@@ -9,6 +9,8 @@
   // bulk actions and swimlanes stay on the project's own list.
   import { listIssues, updateIssue, type Issue } from "../lib/api";
   import { STATUSES, TERMINAL_STATUSES } from "../lib/issues/grouping";
+  import { compareIssues, defaultSortDir, type SortField, type SortDir } from "../lib/issues/sort";
+  import { loadListState, saveListState } from "../lib/issues/persistence";
   import { startAutoRefresh } from "../lib/autoRefresh.svelte";
   import { motionReduced } from "../lib/theme";
   import StatusIcon, { statusLabel } from "../lib/StatusIcon.svelte";
@@ -17,7 +19,7 @@
   import AssigneeMarker from "../lib/issues/AssigneeMarker.svelte";
   import ErrorState from "../lib/ErrorState.svelte";
   import { toast } from "../lib/toast/toast.svelte";
-  import { List, LayoutGrid } from "lucide-svelte";
+  import { List, LayoutGrid, ArrowUp, ArrowDown, Signal, Clock, History, Hash } from "lucide-svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { flip } from "svelte/animate";
   import { getContext } from "svelte";
@@ -46,6 +48,27 @@
   let dragging = $state(false);
   let total = $derived(STATUSES.reduce((n, s) => n + (columns[s]?.length ?? 0), 0));
 
+  // Same ordering as a project's list and board, remembered under a key no
+  // numeric project id can take.
+  const SORT_LABELS: Record<SortField, string> = { priority: "Priority", age: "Age", updated: "Updated", number: "Issue #" };
+  const saved = loadListState("all");
+  let sortField = $state<SortField>(saved.sortField ?? "priority");
+  let sortDir = $state<SortDir>(saved.sortDir ?? "asc");
+  let sortOpen = $state(false);
+
+  const sorted = (items: Issue[]) =>
+    [...items].sort((a, b) => compareIssues(a, b, { searchQuery: "", scores: new Map(), sortField, sortDir }));
+
+  function selectSort(field: SortField) {
+    if (sortField === field) sortDir = sortDir === "asc" ? "desc" : "asc";
+    else {
+      sortField = field;
+      sortDir = defaultSortDir(field);
+    }
+    saveListState("all", { sortField, sortDir });
+    columns = Object.fromEntries(STATUSES.map((s) => [s, sorted(columns[s] ?? [])]));
+  }
+
   const open = (i: Issue) => navigate(`/${i.identifier.replace(/-\d+$/, "")}/issues/${i.identifier}`);
   const flipMs = () => (motionReduced() ? 0 : 150);
 
@@ -60,7 +83,7 @@
       if (initial) error = failed.error;
     } else {
       error = "";
-      columns = Object.fromEntries(STATUSES.map((s, n) => [s, res[n].ok ? res[n].data : []]));
+      columns = Object.fromEntries(STATUSES.map((s, n) => [s, res[n].ok ? sorted(res[n].data) : []]));
     }
     loading = false;
   }
@@ -98,11 +121,60 @@
   }
 </script>
 
+<svelte:window
+  onclick={() => (sortOpen = false)}
+  onkeydown={(e) => { if (e.key === "Escape") sortOpen = false; }}
+/>
+
 {#snippet topbarContent()}
   <div class="flex items-center gap-3 px-6 py-2 w-full">
     <span class="text-body-sm font-medium text-[var(--text)]">All issues</span>
     <span class="text-micro text-[var(--text-faint)] tabular-nums">{total}</span>
     <div class="ml-auto flex items-center gap-1">
+      <div class="relative">
+        <button
+          class="h-7 flex items-center gap-1 px-2 rounded-md text-caption font-medium
+                 text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)] transition-colors
+                 {sortOpen ? 'text-[var(--text)] bg-[var(--bg-subtle)]' : ''}"
+          title="Sort: {SORT_LABELS[sortField]} {sortDir === 'asc' ? 'ascending' : 'descending'}"
+          onclick={(e) => { e.stopPropagation(); sortOpen = !sortOpen; }}
+        >
+          {#if sortDir === "asc"}<ArrowUp size={12} class="shrink-0" />{:else}<ArrowDown size={12} class="shrink-0" />{/if}
+          <span>{SORT_LABELS[sortField]}</span>
+        </button>
+        {#if sortOpen}
+          <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+          <div
+            class="absolute right-0 top-full mt-1.5 z-30 w-[220px] bg-[var(--surface)] border border-[var(--border)]
+                   rounded-lg shadow-lg py-1.5 text-body-sm"
+            onclick={(e) => e.stopPropagation()}
+          >
+            <div class="px-3 pt-1 pb-1.5 text-[var(--text-faint)] text-micro uppercase tracking-widest font-semibold">
+              Sort by
+            </div>
+            {#each [["priority", "Priority", Signal], ["age", "Age", Clock], ["updated", "Updated", History], ["number", "Issue number", Hash]] as const as [field, label, Icon] (field)}
+              {@const active = sortField === field}
+              <button
+                class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors
+                       {active
+                  ? 'text-[var(--text)] bg-[var(--bg-subtle)] font-medium'
+                  : 'text-[var(--text-muted)] hover:text-[var(--text)] hover:bg-[var(--bg-subtle)]'}"
+                onclick={() => selectSort(field)}
+              >
+                <span class="flex items-center gap-2"><Icon size={13} class="shrink-0" />{label}</span>
+                {#if active}
+                  <span class="text-[var(--accent)] flex items-center">
+                    {#if sortDir === "asc"}<ArrowUp size={13} />{:else}<ArrowDown size={13} />{/if}
+                  </span>
+                {/if}
+              </button>
+            {/each}
+            <div class="px-3 pt-2 pb-1 mt-1 text-micro text-[var(--text-faint)] border-t border-[var(--border)] leading-snug">
+              Click the active row to flip direction.
+            </div>
+          </div>
+        {/if}
+      </div>
       {#each [["/issues", "list", "List", List], ["/board", "board", "Board", LayoutGrid]] as const as [path, id, label, Icon] (id)}
         <button
           class="flex items-center gap-1.5 px-2 py-1 rounded-md text-body-sm transition-colors
