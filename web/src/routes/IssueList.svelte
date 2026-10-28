@@ -2373,7 +2373,7 @@
  </div>
 
  <!-- LIF-186: persistent right sidebar — project-wide issue context.
-      Always-on (no toggle) on lg+; mirrors the Pages sidebar. Breakdowns
+      Shown on lg+ and collapsible to an edge tab; mirrors the Pages sidebar. Breakdowns
        come from the unfiltered `issues`, and every row is a one-click
       filter shortcut into the existing filter state. -->
  {#if layout !== "board" && !loading && !error}

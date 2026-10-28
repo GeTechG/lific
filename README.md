@@ -35,13 +35,14 @@ Plans and issues live on your server instead of in the context window, so work o
 ## 60-second setup
 
 ```bash
-cargo install lific   # or download a binary from Releases
+cargo install lific   # or Homebrew (below), or download a binary from Releases
 lific init            # config, database, admin account, background service on :3456
 lific connect         # MCP config for your AI clients
 ```
 
 Restart your AI client. The web UI is at http://localhost:3456. `lific doctor` checks config, database, server and an MCP round trip, and exits nonzero if anything is broken.
 
+- `brew install voidnullable/tap/lific` replaces `cargo install` on macOS and Linux: a release binary in seconds, no Rust toolchain.
 - `lific init --here` keeps config and database in the current directory.
 - `lific init --no-service` skips the background service; run `lific start` yourself.
 - `lific service status | restart | stop | uninstall` manages the service.

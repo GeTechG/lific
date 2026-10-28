@@ -9,7 +9,9 @@
 // `rerun-if-changed` on a directory watches it recursively, so any change to
 // the built bundle invalidates the crate and forces a re-embed.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 
 /// The Windows application manifest. `consoleAllocationPolicy=detached` keeps
@@ -63,28 +65,44 @@ fn main() {
     embed_windows_manifest();
     reserve_windows_main_stack();
 
-    // The frontend must be built before this crate; never create web/dist here.
-    // Builds must not mutate the source tree.
-    let dist = Path::new("web/dist");
+    let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let source_dist = manifest_dir.join("web/dist");
 
     // The built bundle: changing it must trigger a re-embed.
     println!("cargo:rerun-if-changed=web/dist");
-    // The frontend sources: changing them cannot rebuild the bundle for us,
-    // but it re-runs this script so the staleness check below gets a chance
-    // to point out that web/dist no longer matches web/src.
+    // The frontend sources: changing them cannot rebuild the bundle for us
+    // (unless `build-web` is on), but it re-runs this script so the staleness
+    // check below gets a chance to point out that web/dist no longer matches.
     println!("cargo:rerun-if-changed=web/src");
 
-    let src = Path::new("web/src");
+    let dist = if has_frontend_entry(&source_dist) {
+        source_dist
+    } else if std::env::var_os("CARGO_FEATURE_BUILD_WEB").is_some() {
+        // Opt-in only: this runs `bun install`, which needs the network, so
+        // default builds stay hermetic for Nix and other sandboxed builders.
+        for input in FRONTEND_BUILD_INPUTS {
+            if manifest_dir.join(input).exists() {
+                println!("cargo:rerun-if-changed={input}");
+            }
+        }
+        build_frontend(&manifest_dir, &out_dir)
+    } else {
+        if matches!(std::env::var("PROFILE").as_deref(), Ok("release" | "dist")) {
+            panic!(
+                "web/dist/index.html is missing or empty; build the frontend first with `devenv tasks run lific:web:build`, or enable the `build-web` feature to build it with Bun during the Cargo build (for example `cargo install --git https://github.com/VoidNullable/lific --locked --features build-web`)"
+            );
+        }
+        source_dist
+    };
 
-    if matches!(std::env::var("PROFILE").as_deref(), Ok("release" | "dist"))
-        && !has_frontend_entry(dist)
-    {
-        panic!(
-            "web/dist/index.html is missing or empty; build the frontend first with `devenv tasks run lific:web:build`"
-        );
-    }
+    // rust-embed resolves this at compile time, letting generated assets stay
+    // under Cargo's build directory instead of mutating a Git checkout.
+    println!("cargo:rustc-env=LIFIC_WEB_DIST={}", dist.display());
 
-    match (newest_mtime(dist), newest_mtime(src)) {
+    let src = manifest_dir.join("web/src");
+
+    match (newest_mtime(&dist), newest_mtime(&src)) {
         (None, _) => {
             println!(
                 "cargo:warning=web/dist is missing or empty; development builds use the frontend dev server (run `devenv tasks run lific:web:build` for an embedded UI)"
@@ -97,6 +115,86 @@ fn main() {
         }
         _ => {}
     }
+}
+
+/// Files outside web/src that change what `bun run build` produces. Only
+/// watched when `build-web` builds the bundle, so node_modules and dist never
+/// trigger a rerun.
+const FRONTEND_BUILD_INPUTS: &[&str] = &[
+    "web/index.html",
+    "web/package.json",
+    "web/bun.lock",
+    "web/vite.config.ts",
+    "web/svelte.config.js",
+    "web/tsconfig.json",
+    "web/tsconfig.app.json",
+    "web/tsconfig.node.json",
+    "web/public",
+];
+
+/// Build the frontend under OUT_DIR for the `build-web` feature, used by
+/// `cargo install --git`: generated web/dist assets are intentionally not
+/// checked in, and the build must not write into the checkout.
+fn build_frontend(manifest_dir: &Path, out_dir: &Path) -> PathBuf {
+    let build_root = out_dir.join("frontend-build");
+    let web_root = build_root.join("web");
+    if build_root.exists()
+        && let Err(error) = fs::remove_dir_all(&build_root)
+    {
+        panic!("failed to reset the frontend build directory: {error}");
+    }
+    if let Err(error) = copy_tree(&manifest_dir.join("web"), &web_root) {
+        panic!("failed to stage frontend sources for the release build: {error}");
+    }
+    if let Err(error) = fs::copy(
+        manifest_dir.join("Cargo.toml"),
+        build_root.join("Cargo.toml"),
+    ) {
+        panic!("failed to stage Cargo.toml for the frontend build: {error}");
+    }
+
+    run_bun(
+        &web_root,
+        &["install", "--frozen-lockfile", "--linker=hoisted"],
+        "install frontend dependencies",
+    );
+    run_bun(&web_root, &["run", "build"], "build the frontend");
+
+    let dist = web_root.join("dist");
+    if !has_frontend_entry(&dist) {
+        panic!("Bun completed without producing web/dist/index.html");
+    }
+    dist
+}
+
+fn run_bun(cwd: &Path, args: &[&str], purpose: &str) {
+    match Command::new("bun").args(args).current_dir(cwd).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => panic!("Bun failed to {purpose} (exit status {status})"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => panic!(
+            "Bun is required to build the embedded frontend from Git; install Bun and retry the Cargo install command ({error})"
+        ),
+        Err(error) => panic!("failed to run Bun to {purpose}: {error}"),
+    }
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "dist" || name == "node_modules" || name == ".git" {
+            continue;
+        }
+        let from = entry.path();
+        let to = destination.join(name);
+        if entry.file_type()?.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            fs::copy(from, to)?;
+        }
+    }
+    Ok(())
 }
 
 fn has_frontend_entry(dist: &Path) -> bool {
@@ -131,7 +229,28 @@ fn newest_mtime(dir: &Path) -> Option<SystemTime> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_frontend_entry, newest_mtime};
+    use super::{copy_tree, has_frontend_entry, newest_mtime};
+
+    #[test]
+    fn staged_frontend_sources_leave_out_build_outputs_and_dependencies() {
+        let source = tempfile::tempdir().unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        for dir in ["src/lib", "dist", "node_modules/vite"] {
+            std::fs::create_dir_all(source.path().join(dir)).unwrap();
+        }
+        std::fs::write(source.path().join("package.json"), "{}").unwrap();
+        std::fs::write(source.path().join("src/lib/app.ts"), "export {}").unwrap();
+        std::fs::write(source.path().join("dist/index.html"), "stale").unwrap();
+        std::fs::write(source.path().join("node_modules/vite/index.js"), "").unwrap();
+
+        let web = staged.path().join("web");
+        copy_tree(source.path(), &web).unwrap();
+
+        assert!(web.join("package.json").is_file());
+        assert!(web.join("src/lib/app.ts").is_file());
+        assert!(!web.join("dist").exists());
+        assert!(!web.join("node_modules").exists());
+    }
 
     #[test]
     fn assets_without_an_html_entry_are_not_a_shippable_frontend() {
